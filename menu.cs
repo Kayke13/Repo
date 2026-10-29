@@ -53,6 +53,8 @@ namespace CustomIngameMenu
         public bool invisibility = false;
         public bool superGrab = false;
         public float grabForceMultiplier = 1.0f;
+        public bool brightMap = false;
+        private Light fullbrightLight = null;
 
         public bool infiniteJumps = false;
         public float walkSpeedMultiplier = 1.0f;
@@ -73,6 +75,7 @@ namespace CustomIngameMenu
         public bool espValuables = false;
         public bool espEnemies = true;
         public bool espExtraction = true;
+        public bool espExtractionOnlyLocked = true;
         public bool espExtractionOnlyIncomplete = true;
         public bool espShowDistance = true;
         public bool espShowPrice = true;
@@ -1446,6 +1449,38 @@ namespace CustomIngameMenu
                     }
                 }
 
+                if (brightMap)
+                {
+                    Camera mainCam = GetActiveCamera();
+                    if (mainCam != null)
+                    {
+                        if (fullbrightLight == null)
+                        {
+                            GameObject lightObj = new GameObject("PatchZone_Fullbright");
+                            lightObj.hideFlags = HideFlags.HideAndDontSave;
+                            fullbrightLight = lightObj.AddComponent<Light>();
+                            fullbrightLight.type = LightType.Point;
+                            fullbrightLight.range = 80f;
+                            fullbrightLight.intensity = 2.2f;
+                            fullbrightLight.color = new Color(0.95f, 0.95f, 1.0f);
+                            fullbrightLight.shadows = LightShadows.None;
+                        }
+
+                        if (fullbrightLight != null)
+                        {
+                            fullbrightLight.enabled = true;
+                            fullbrightLight.transform.position = mainCam.transform.position + mainCam.transform.forward * 0.6f;
+                        }
+                    }
+                }
+                else
+                {
+                    if (fullbrightLight != null && fullbrightLight.enabled)
+                    {
+                        fullbrightLight.enabled = false;
+                    }
+                }
+
                 if (infiniteStationCharge && chargingStationType != null)
                 {
                     object csInst = null;
@@ -2009,111 +2044,127 @@ namespace CustomIngameMenu
 
                 if (extractionPointType != null)
                 {
+                    List<Component> allExtractionPoints = new List<Component>();
+
+                    if (roundDirectorType != null && roundDirectorInstFld != null)
+                    {
+                        object rd = roundDirectorInstFld.GetValue(null);
+                        if (rd != null)
+                        {
+                            FieldInfo epCurFld = roundDirectorType.GetField("extractionPointCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (epCurFld != null)
+                            {
+                                Component epCur = epCurFld.GetValue(rd) as Component;
+                                if (epCur != null && !allExtractionPoints.Contains(epCur))
+                                {
+                                    allExtractionPoints.Add(epCur);
+                                }
+                            }
+
+                            FieldInfo epListFld = roundDirectorType.GetField("extractionPointList", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (epListFld != null)
+                            {
+                                IList list = epListFld.GetValue(rd) as IList;
+                                if (list != null)
+                                {
+                                    for (int l = 0; l < list.Count; l++)
+                                    {
+                                        GameObject go = list[l] as GameObject;
+                                        if (go != null)
+                                        {
+                                            Component epComp = go.GetComponent(extractionPointType);
+                                            if (epComp != null && !allExtractionPoints.Contains(epComp))
+                                            {
+                                                allExtractionPoints.Add(epComp);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     UnityEngine.Object[] points = UnityEngine.Object.FindObjectsOfType(extractionPointType);
                     if (points != null)
                     {
                         for (int i = 0; i < points.Length; i++)
                         {
                             Component ep = points[i] as Component;
-                            if (ep == null || ep.gameObject == null || !ep.gameObject.activeInHierarchy) continue;
-
-                            bool isShop = false;
-                            if (epIsShopFld != null)
+                            if (ep != null && !allExtractionPoints.Contains(ep))
                             {
-                                object isShopVal = epIsShopFld.GetValue(ep);
-                                if (isShopVal is bool) isShop = (bool)isShopVal;
+                                allExtractionPoints.Add(ep);
                             }
-                            if (!isShop && epShopStationFld != null)
-                            {
-                                object ss = epShopStationFld.GetValue(ep);
-                                if (ss != null) isShop = true;
-                            }
-                            if (isShop) continue;
-
-                            string stateStr = "";
-                            if (epCurrentStateFld != null)
-                            {
-                                object curSt = epCurrentStateFld.GetValue(ep);
-                                if (curSt != null) stateStr = curSt.ToString();
-                            }
-
-                            bool isComplete = (stateStr == "Complete" || stateStr == "TaxReturn");
-                            if (!isComplete && epExtractionSurplusCompletedFld != null)
-                            {
-                                object val = epExtractionSurplusCompletedFld.GetValue(ep);
-                                if (val is bool && ((bool)val)) isComplete = true;
-                            }
-                            if (!isComplete && epIsCompletedRightAwayFld != null)
-                            {
-                                object val = epIsCompletedRightAwayFld.GetValue(ep);
-                                if (val is bool && ((bool)val)) isComplete = true;
-                            }
-
-                            if (espExtractionOnlyIncomplete && isComplete) continue;
-
-                            int quota = 0;
-                            if (epHaulGoalFld != null)
-                            {
-                                object hg = epHaulGoalFld.GetValue(ep);
-                                if (hg != null) quota = Convert.ToInt32(hg);
-                            }
-
-                            bool isDoorLocked = false;
-                            if (epIsLockedFld != null)
-                            {
-                                object lk = epIsLockedFld.GetValue(ep);
-                                if (lk is bool) isDoorLocked = (bool)lk;
-                            }
-
-                            string labelText = "⛟ EXTRAÇÃO";
-                            if (isComplete) labelText += " [CONCLUÍDO]";
-                            else if (isDoorLocked) labelText += " [BLOQUEADO]";
-                            else if (quota <= 0) labelText += " [PRONTO]";
-                            else labelText += " [$" + quota.ToString("N0") + "]";
-
-                            Color pointColor = isComplete ? new Color(0.5f, 0.5f, 0.5f, 0.8f) :
-                                               (isDoorLocked ? new Color(1.0f, 0.25f, 0.25f, 0.9f) :
-                                               (quota <= 0 ? new Color(0.2f, 1.0f, 0.45f, 0.9f) : new Color(0.2f, 0.85f, 1.0f, 0.85f)));
-
-                            pointPositions.Add(ep.transform.position + Vector3.up * 1.0f);
-                            pointLabels.Add(labelText);
-                            pointColors.Add(pointColor);
                         }
                     }
-                }
 
-                Type truckDoorType = Type.GetType("TruckDoor, Assembly-CSharp");
-                if (truckDoorType != null)
-                {
-                    UnityEngine.Object[] doors = UnityEngine.Object.FindObjectsOfType(truckDoorType);
-                    if (doors != null)
+                    for (int i = 0; i < allExtractionPoints.Count; i++)
                     {
-                        for (int d = 0; d < doors.Length; d++)
+                        Component ep = allExtractionPoints[i];
+                        if (ep == null || ep.gameObject == null) continue;
+
+                        string stateStr = "";
+                        if (epCurrentStateFld != null)
                         {
-                            Component td = doors[d] as Component;
-                            if (td == null || td.gameObject == null || !td.gameObject.activeInHierarchy) continue;
-
-                            Vector3 doorPos = td.transform.position;
-                            Transform doorMeshTr = td.transform.Find("Mesh");
-                            if (doorMeshTr != null) doorPos = doorMeshTr.position;
-
-                            bool alreadyHasNear = false;
-                            for (int p = 0; p < pointPositions.Count; p++)
-                            {
-                                if (Vector3.Distance(doorPos, pointPositions[p]) < 4f)
-                                {
-                                    alreadyHasNear = true;
-                                    break;
-                                }
-                            }
-
-                            if (!alreadyHasNear)
-                            {
-                                pointPositions.Add(doorPos + Vector3.up * 0.5f);
-                                pointLabels.Add("⛟ PORTA CAMINHÃO / SAÍDA");
-                                pointColors.Add(new Color(0.2f, 0.85f, 1.0f, 0.9f));
-                            }
+                            object curSt = epCurrentStateFld.GetValue(ep);
+                            if (curSt != null) stateStr = curSt.ToString();
                         }
+
+                        bool isComplete = (stateStr == "Complete" || stateStr == "TaxReturn");
+                        if (!isComplete && epExtractionSurplusCompletedFld != null)
+                        {
+                            object val = epExtractionSurplusCompletedFld.GetValue(ep);
+                            if (val is bool && ((bool)val)) isComplete = true;
+                        }
+                        if (!isComplete && epIsCompletedRightAwayFld != null)
+                        {
+                            object val = epIsCompletedRightAwayFld.GetValue(ep);
+                            if (val is bool && ((bool)val)) isComplete = true;
+                        }
+
+                        if (espExtractionOnlyIncomplete && isComplete) continue;
+
+                        int quota = 0;
+                        if (epHaulGoalFld != null)
+                        {
+                            object hg = epHaulGoalFld.GetValue(ep);
+                            if (hg != null) quota = Convert.ToInt32(hg);
+                        }
+
+                        bool isDoorLocked = false;
+                        if (epIsLockedFld != null)
+                        {
+                            object lk = epIsLockedFld.GetValue(ep);
+                            if (lk is bool) isDoorLocked = (bool)lk;
+                        }
+
+                        if (espExtractionOnlyLocked && !isDoorLocked) continue;
+
+                        string labelText = "⛟ EXTRAÇÃO (VENDER ITENS)";
+                        if (isComplete) labelText += " [CONCLUÍDO]";
+                        else if (isDoorLocked) labelText += " [BLOQUEADO]";
+                        else if (quota <= 0) labelText += " [PRONTO]";
+                        else labelText += " [$" + quota.ToString("N0") + "]";
+
+                        Color pointColor = isComplete ? new Color(0.5f, 0.5f, 0.5f, 0.8f) :
+                                           (isDoorLocked ? new Color(1.0f, 0.25f, 0.25f, 0.9f) :
+                                           (quota <= 0 ? new Color(0.2f, 1.0f, 0.45f, 0.9f) : new Color(0.2f, 0.85f, 1.0f, 0.85f)));
+
+                        Vector3 drawPos = ep.transform.position;
+                        FieldInfo platFld = extractionPointType.GetField("platform", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (platFld != null)
+                        {
+                            Transform pt = platFld.GetValue(ep) as Transform;
+                            if (pt != null) drawPos = pt.position;
+                        }
+                        else
+                        {
+                            Transform platformTr = ep.transform.Find("Platform");
+                            if (platformTr != null) drawPos = platformTr.position;
+                        }
+
+                        pointPositions.Add(drawPos + Vector3.up * 0.8f);
+                        pointLabels.Add(labelText);
+                        pointColors.Add(pointColor);
                     }
                 }
 
@@ -2121,13 +2172,13 @@ namespace CustomIngameMenu
                 {
                     Vector3 pos = pointPositions[i];
                     Vector3 diff = pos - camPos;
-                    if (Vector3.Dot(camFwd, diff) <= 0.15f) continue;
+                    if (Vector3.Dot(camFwd, diff) <= 0.01f) continue;
 
                     float dist = diff.magnitude;
-                    if (dist > espMaxDistance || dist < 0.2f) continue;
+                    if (dist > espMaxDistance) continue;
 
                     Vector3 screenPos = cam.WorldToScreenPoint(pos);
-                    if (screenPos.z <= 0.2f) continue;
+                    if (screenPos.z <= 0.05f) continue;
 
                     float screenX = screenPos.x * scaleX;
                     float screenY = (float)Screen.height - (screenPos.y * scaleY);
@@ -2250,6 +2301,9 @@ namespace CustomIngameMenu
                         if (GUILayout.Button("+", GUILayout.Width(28), GUILayout.Height(22))) grabForceMultiplier = Mathf.Min(5.0f, grabForceMultiplier + 0.5f);
                         GUILayout.EndHorizontal();
                     }
+                    GUILayout.Space(6);
+
+                    brightMap = GUILayout.Toggle(brightMap, T(" Iluminação Total do Mapa (Fullbright)", " Fullbright / Clear Map Vision"));
                     GUILayout.Space(10);
 
                     GUILayout.BeginHorizontal();
@@ -2337,6 +2391,7 @@ namespace CustomIngameMenu
                     espExtraction = GUILayout.Toggle(espExtraction, T(" ESP de Extração (Oculto no Lobby)", " Extraction ESP"));
                     if (espExtraction)
                     {
+                        espExtractionOnlyLocked = GUILayout.Toggle(espExtractionOnlyLocked, T("  └ Apenas Fechados / Bloqueados", "  └ Locked Only"));
                         espExtractionOnlyIncomplete = GUILayout.Toggle(espExtractionOnlyIncomplete, T("  └ Ocultar após Concluir Meta", "  └ Hide Once Goal Reached"));
                     }
 
