@@ -17,6 +17,15 @@ namespace CustomIngameMenu
 
         public static void Load()
         {
+            GameObject existing = GameObject.Find("CheatMenu_RuntimeHost");
+            if (existing != null)
+            {
+                _obj = existing;
+                CheatMenu menu = _obj.GetComponent<CheatMenu>();
+                if (menu != null) menu.isOpen = true;
+                return;
+            }
+
             if (_obj != null)
             {
                 CheatMenu menu = _obj.GetComponent<CheatMenu>();
@@ -31,6 +40,11 @@ namespace CustomIngameMenu
 
         public static void Unload()
         {
+            GameObject existing = GameObject.Find("CheatMenu_RuntimeHost");
+            if (existing != null)
+            {
+                UnityEngine.Object.Destroy(existing);
+            }
             if (_obj != null)
             {
                 UnityEngine.Object.Destroy(_obj);
@@ -69,6 +83,7 @@ namespace CustomIngameMenu
         public bool autoChargeHeldItem = true;
 
         public bool unlockShopItems = false;
+        private bool prevUnlockShopItems = false;
         public bool freeShop = false;
         public bool freeExtraction = false;
 
@@ -198,28 +213,101 @@ namespace CustomIngameMenu
         private static FieldInfo batteryBarsFld;
         private static FieldInfo drainRateFld;
 
+        // Performance & Optimization Caches
+        private static bool reflectionScanned = false;
+        private static float reflectionScanTimer = 0f;
+        private static int reflectionScanCount = 0;
+        private static Camera _cachedCam = null;
+        private static float _camCacheTimer = 0f;
+        private static Component cachedLocalAvatar = null;
+        private static float localAvatarCacheTimer = 0f;
+        private static readonly Dictionary<string, string> itemNameCache = new Dictionary<string, string>();
+        private static readonly List<Component> cachedExtractionPoints = new List<Component>();
+        private static float batteryScanTimer = 0f;
+        private static readonly GUIStyle emptyWindow = new GUIStyle();
+        private static readonly string[] TabIcons = new string[] { "👤 ", "⚡ ", "👁 ", "🎒 ", "🎭 ", "🛒 ", "⚙ " };
+        private static float hackTickTimer = 0f;
+        private static float slowScanTimer = 0f;
+        private static float cachedBaseMove = 0f;
+        private static float cachedBaseSprint = 0f;
+        private static float cachedBaseCrouch = 0f;
+        private static Type statsMgrType;
+        private static FieldInfo statsMgrInstFld;
+        private static FieldInfo statsMgrRunStatsFld;
+        private static Type currencyUiType;
+        private static FieldInfo currencyUiInstFld;
+        private static MethodInfo currencyUiFetchMethod;
+        private static readonly object[] moneyArgs = new object[1];
+        private static int lastAppliedMoney = -1;
+
+        // Pre-cached Reflection Handles for Zero-Allocation Loops
+        private static FieldInfo photonPcInstFld;
+        private static FieldInfo photonPcMoveSpeedFld;
+        private static FieldInfo photonPcSprintSpeedFld;
+        private static FieldInfo photonPcCrouchSpeedFld;
+        private static FieldInfo photonPcEnergyCurFld;
+        private static FieldInfo photonPcEnergyStartFld;
+        private static FieldInfo photonPcDebugEnergyFld;
+        private static FieldInfo photonPcJumpCdFld;
+        private static FieldInfo photonPcJumpBufferFld;
+        private static FieldInfo photonPcJumpExtraFld;
+        private static FieldInfo photonPcAvatarScriptFld;
+
+        private static Type enemyType;
+        private static FieldInfo enemyNameFld;
+        private static FieldInfo enemyHealthCompFld;
+        private static FieldInfo healthCurrentFld;
+        private static FieldInfo healthMaxFld;
+        private static FieldInfo epEnemyFld;
+        private static FieldInfo epSpawnedFld;
+        private static FieldInfo enCenterTransformFld;
+        private static FieldInfo epPlatformFld;
+
+        private static FieldInfo enemyDirectorDebugNoVisionFld;
+        private static FieldInfo playerAvatarSteamIDFld;
+        private static FieldInfo roundDirectorEpCurFld;
+        private static FieldInfo roundDirectorEpListFld;
+
         private Texture2D texBackground;
         private Texture2D texSidebar;
+        private Texture2D texHeader;
         private Texture2D texCard;
+        private Texture2D texCardBorder;
         private Texture2D texAccent;
+        private Texture2D texAccentCyan;
+        private Texture2D texToggleOn;
+        private Texture2D texToggleOff;
+        private Texture2D texBtnNormal;
+        private Texture2D texBtnHover;
         private Texture2D texWhite;
         private Texture2D texDarkBadge;
 
+        private GUIStyle styleTitle;
+        private GUIStyle styleSubtitle;
+        private GUIStyle styleTabActive;
+        private GUIStyle styleTabInactive;
+        private GUIStyle styleHeader;
+        private GUIStyle styleLabelText;
+        private GUIStyle styleToggleOn;
+        private GUIStyle styleToggleOff;
+        private GUIStyle styleStepperBtn;
+        private GUIStyle styleStepperVal;
+        private GUIStyle styleActionBtn;
+        private GUIStyle styleCloseBtn;
         private GUIStyle espLabelNormal;
         private GUIStyle espLabelGold;
         private GUIStyle espEnemyStyle;
         private GUIStyle espHpStyle;
         private GUIStyle espExtractionStyle;
-        private bool texturesInitialized = false;
-        private Vector2 itemSpawnScroll = Vector2.zero;
-        private Vector2 espScroll = Vector2.zero;
 
-        private float periodicHackTimer = 0f;
+        private bool texturesInitialized = false;
+        private Vector2 contentScroll = Vector2.zero;
+
 
         private static readonly string[][] Tabs = new string[][]
         {
-            new string[] { "Jogador", "Física", "Radar ESP", "Equipamentos", "Cosméticos", "Sessão & Loja", "Sistema" },
-            new string[] { "Player", "Physics", "ESP Radar", "Loadout", "Cosmetics", "Lobby & Shop", "System" }
+            new string[] { "Jogador", "Física", "Visuais (ESP)", "Equipamentos", "Cosméticos", "Sessão & Loja", "Sistema" },
+            new string[] { "Player", "Physics", "Visuals (ESP)", "Loadout", "Cosmetics", "Lobby & Shop", "System" }
         };
 
         private string T(string pt, string en)
@@ -237,10 +325,40 @@ namespace CustomIngameMenu
             return res;
         }
 
+        private static string GetCleanItemName(string originalName)
+        {
+            if (string.IsNullOrEmpty(originalName)) return "Item";
+            string clean;
+            if (!itemNameCache.TryGetValue(originalName, out clean))
+            {
+                clean = originalName.Replace("(Clone)", "")
+                                    .Replace("Valuable", "")
+                                    .Replace("Wizard", "")
+                                    .Replace("Arctic", "")
+                                    .Replace("Surplus", "")
+                                    .Trim();
+                if (string.IsNullOrEmpty(clean)) clean = "Item";
+                itemNameCache[originalName] = clean;
+            }
+            return clean;
+        }
+
         private void Awake()
         {
-            float w = 640f;
-            float h = 580f;
+            CheatMenu[] existingMenus = UnityEngine.Object.FindObjectsOfType<CheatMenu>();
+            if (existingMenus != null && existingMenus.Length > 1)
+            {
+                for (int i = 0; i < existingMenus.Length; i++)
+                {
+                    if (existingMenus[i] != this && existingMenus[i] != null)
+                    {
+                        UnityEngine.Object.Destroy(existingMenus[i].gameObject);
+                    }
+                }
+            }
+
+            float w = 730f;
+            float h = 530f;
             winRect = new Rect((Screen.width - w) / 2f, (Screen.height - h) / 2f, w, h);
 
             InitReflection();
@@ -249,9 +367,27 @@ namespace CustomIngameMenu
 
         private static void InitReflection()
         {
-            if (cursorType != null && metaManagerType != null && valuableDirectorType != null && extractionPointType != null) return;
+            if (reflectionScanned) return;
 
-            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+            reflectionScanTimer += Time.deltaTime;
+            if (reflectionScanTimer < 2.0f && reflectionScanCount > 0) return;
+            reflectionScanTimer = 0f;
+            reflectionScanCount++;
+
+            Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
+            Assembly targetAsm = null;
+            for (int a = 0; a < asms.Length; a++)
+            {
+                if (asms[a].GetName().Name == "Assembly-CSharp")
+                {
+                    targetAsm = asms[a];
+                    break;
+                }
+            }
+
+            IEnumerable<Assembly> scanList = (targetAsm != null) ? new Assembly[] { targetAsm } : (IEnumerable<Assembly>)asms;
+
+            foreach (Assembly asm in scanList)
             {
                 if (cameraAimType == null)
                 {
@@ -525,62 +661,152 @@ namespace CustomIngameMenu
                         sfStatSetRunCurrency = t.GetMethod("StatSetRunCurrency", BindingFlags.Public | BindingFlags.Static);
                     }
                 }
+
+                if (statsMgrType == null)
+                {
+                    Type t = asm.GetType("StatsManager");
+                    if (t != null)
+                    {
+                        statsMgrType = t;
+                        statsMgrInstFld = t.GetField("instance", BindingFlags.Public | BindingFlags.Static);
+                        statsMgrRunStatsFld = t.GetField("runStats", BindingFlags.Public | BindingFlags.Instance);
+                    }
+                }
+
+                if (currencyUiType == null)
+                {
+                    Type t = asm.GetType("CurrencyUI");
+                    if (t != null)
+                    {
+                        currencyUiType = t;
+                        currencyUiInstFld = t.GetField("instance", BindingFlags.Public | BindingFlags.Static);
+                        currencyUiFetchMethod = t.GetMethod("FetchCurrency", BindingFlags.Public | BindingFlags.Instance);
+                    }
+                }
+
+                if (enemyType == null)
+                {
+                    Type t = asm.GetType("Enemy");
+                    if (t != null)
+                    {
+                        enemyType = t;
+                        enemyNameFld = t.GetField("enemyName", BindingFlags.Public | BindingFlags.Instance);
+                        enemyHealthCompFld = t.GetField("Health", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        enCenterTransformFld = t.GetField("CenterTransform", BindingFlags.Public | BindingFlags.Instance);
+                    }
+                }
+
+                if (healthCurrentFld == null)
+                {
+                    Type ehType = asm.GetType("EnemyHealth");
+                    if (ehType != null)
+                    {
+                        healthCurrentFld = ehType.GetField("healthCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        healthMaxFld = ehType.GetField("health", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    }
+                }
+            }
+
+            if (extractionPointType != null)
+            {
+                epPlatformFld = extractionPointType.GetField("platform", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+
+            if (photonPlayerControllerType != null)
+            {
+                photonPcInstFld = photonPlayerControllerType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
+                photonPcMoveSpeedFld = photonPlayerControllerType.GetField("MoveSpeed", BindingFlags.Public | BindingFlags.Instance);
+                photonPcSprintSpeedFld = photonPlayerControllerType.GetField("SprintSpeed", BindingFlags.Public | BindingFlags.Instance);
+                photonPcCrouchSpeedFld = photonPlayerControllerType.GetField("CrouchSpeed", BindingFlags.Public | BindingFlags.Instance);
+                photonPcEnergyCurFld = photonPlayerControllerType.GetField("EnergyCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                photonPcEnergyStartFld = photonPlayerControllerType.GetField("EnergyStart", BindingFlags.Public | BindingFlags.Instance);
+                photonPcDebugEnergyFld = photonPlayerControllerType.GetField("DebugEnergy", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                photonPcJumpCdFld = photonPlayerControllerType.GetField("JumpCooldown", BindingFlags.NonPublic | BindingFlags.Instance);
+                photonPcJumpBufferFld = photonPlayerControllerType.GetField("JumpGroundedBuffer", BindingFlags.NonPublic | BindingFlags.Instance);
+                photonPcJumpExtraFld = photonPlayerControllerType.GetField("JumpExtraCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                photonPcAvatarScriptFld = photonPlayerControllerType.GetField("playerAvatarScript", BindingFlags.Public | BindingFlags.Instance);
+            }
+
+            if (enemyDirectorType != null)
+            {
+                enemyDirectorDebugNoVisionFld = enemyDirectorType.GetField("debugNoVision", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+
+            if (playerAvatarType != null)
+            {
+                playerAvatarSteamIDFld = playerAvatarType.GetField("steamID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+
+            if (roundDirectorType != null)
+            {
+                roundDirectorEpCurFld = roundDirectorType.GetField("extractionPointCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                roundDirectorEpListFld = roundDirectorType.GetField("extractionPointList", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            }
+
+            if ((valuableDirectorType != null && extractionPointType != null && playerAvatarType != null) || reflectionScanCount >= 3)
+            {
+                reflectionScanned = true;
             }
         }
 
         private object GetLocalPlayerAvatar()
         {
+            localAvatarCacheTimer += Time.deltaTime;
+            if (cachedLocalAvatar != null && localAvatarCacheTimer < 0.5f)
+            {
+                return cachedLocalAvatar;
+            }
+            localAvatarCacheTimer = 0f;
+
             try
             {
-                InitReflection();
                 if (playerAvatarType != null && playerAvatarInstFld != null)
                 {
                     Component av = playerAvatarInstFld.GetValue(null) as Component;
-                    if (av != null) return av;
+                    if (av != null)
+                    {
+                        cachedLocalAvatar = av;
+                        return av;
+                    }
                 }
-                if (photonPlayerControllerType != null)
+                if (photonPlayerControllerType != null && photonPcInstFld != null && photonPcAvatarScriptFld != null)
                 {
-                    FieldInfo instFld = photonPlayerControllerType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
-                    object pc = (instFld != null) ? instFld.GetValue(null) : null;
+                    object pc = photonPcInstFld.GetValue(null);
                     if (pc != null)
                     {
-                        FieldInfo avFld = photonPlayerControllerType.GetField("playerAvatarScript", BindingFlags.Public | BindingFlags.Instance);
-                        if (avFld != null)
+                        Component av = photonPcAvatarScriptFld.GetValue(pc) as Component;
+                        if (av != null)
                         {
-                            Component av = avFld.GetValue(pc) as Component;
-                            if (av != null) return av;
+                            cachedLocalAvatar = av;
+                            return av;
                         }
                     }
                 }
-                if (playerAvatarType != null)
-                {
-                    Component av = UnityEngine.Object.FindObjectOfType(playerAvatarType) as Component;
-                    if (av != null) return av;
-                }
             }
             catch { }
-            return null;
+            return cachedLocalAvatar;
         }
 
         public void SetPlayerMoney(int amount)
         {
+            if (infiniteMoney && amount == lastAppliedMoney) return;
+            lastAppliedMoney = amount;
+
             try
             {
                 InitReflection();
                 if (sfStatSetRunCurrency != null)
                 {
-                    sfStatSetRunCurrency.Invoke(null, new object[] { amount });
+                    moneyArgs[0] = amount;
+                    sfStatSetRunCurrency.Invoke(null, moneyArgs);
                 }
 
-                Type statsMgrType = Type.GetType("StatsManager, Assembly-CSharp");
-                if (statsMgrType != null)
+                if (statsMgrType != null && statsMgrInstFld != null)
                 {
-                    FieldInfo instFld = statsMgrType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
-                    object sm = (instFld != null) ? instFld.GetValue(null) : null;
-                    if (sm != null)
+                    object sm = statsMgrInstFld.GetValue(null);
+                    if (sm != null && statsMgrRunStatsFld != null)
                     {
-                        FieldInfo runStatsFld = statsMgrType.GetField("runStats", BindingFlags.Public | BindingFlags.Instance);
-                        IDictionary dict = (runStatsFld != null) ? runStatsFld.GetValue(sm) as IDictionary : null;
+                        IDictionary dict = statsMgrRunStatsFld.GetValue(sm) as IDictionary;
                         if (dict != null)
                         {
                             dict["currency"] = amount;
@@ -588,15 +814,12 @@ namespace CustomIngameMenu
                     }
                 }
 
-                Type currencyUiType = Type.GetType("CurrencyUI, Assembly-CSharp");
-                if (currencyUiType != null)
+                if (currencyUiType != null && currencyUiInstFld != null)
                 {
-                    FieldInfo cuiInst = currencyUiType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
-                    object cui = (cuiInst != null) ? cuiInst.GetValue(null) : null;
-                    if (cui != null)
+                    object cui = currencyUiInstFld.GetValue(null);
+                    if (cui != null && currencyUiFetchMethod != null)
                     {
-                        MethodInfo fetch = currencyUiType.GetMethod("FetchCurrency", BindingFlags.Public | BindingFlags.Instance);
-                        if (fetch != null) fetch.Invoke(cui, null);
+                        currencyUiFetchMethod.Invoke(cui, null);
                     }
                 }
             }
@@ -1046,6 +1269,11 @@ namespace CustomIngameMenu
         private void OnDestroy()
         {
             ToggleMenu(false);
+            if (fullbrightLight != null)
+            {
+                try { UnityEngine.Object.Destroy(fullbrightLight.gameObject); } catch { }
+                fullbrightLight = null;
+            }
         }
 
         private void Update()
@@ -1072,37 +1300,106 @@ namespace CustomIngameMenu
                 }
             }
 
-            ApplyHacks();
+            // High frequency kinematic updates (per-frame)
+            UpdatePlayerMovement();
+
+            if (brightMap && fullbrightLight != null && fullbrightLight.enabled)
+            {
+                Camera cam = GetActiveCamera();
+                if (cam != null)
+                {
+                    fullbrightLight.transform.position = cam.transform.position + cam.transform.forward * 0.6f;
+                }
+            }
+
+            // Throttled hacks (10 times per second - 0.1s interval)
+            hackTickTimer += Time.deltaTime;
+            if (hackTickTimer >= 0.1f)
+            {
+                hackTickTimer = 0f;
+                ApplyThrottledHacks();
+            }
+
+            // Periodic slow scans for scene components (once every 1.5s)
+            slowScanTimer += Time.deltaTime;
+            if (slowScanTimer >= 1.5f)
+            {
+                slowScanTimer = 0f;
+                ApplyPeriodicSlowScans();
+            }
         }
 
-        private void ApplyHacks()
+        private void UpdatePlayerMovement()
         {
             try
             {
-                InitReflection();
+                Component playerAvatar = GetLocalPlayerAvatar() as Component;
+                Transform tr = (playerAvatar != null) ? playerAvatar.transform : null;
 
+                if (tr != null && infiniteJumps && Input.GetKeyDown(KeyCode.Space))
+                {
+                    Rigidbody rb = tr.GetComponent<Rigidbody>();
+                    if (rb != null)
+                    {
+                        rb.velocity = new Vector3(rb.velocity.x, 7.5f, rb.velocity.z);
+                    }
+                    else
+                    {
+                        tr.position += Vector3.up * 1.5f;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void ApplyThrottledHacks()
+        {
+            try
+            {
                 if (infiniteMoney)
                 {
                     SetPlayerMoney(999999);
                 }
 
-                if (unlockShopItems)
+                if (photonPlayerControllerType != null && photonPcInstFld != null)
                 {
-                    if (itemDeactivatedUntilLevelType != null)
+                    object pc = photonPcInstFld.GetValue(null);
+                    if (pc != null)
                     {
-                        UnityEngine.Object[] deacts = UnityEngine.Object.FindObjectsOfType(itemDeactivatedUntilLevelType);
-                        if (deacts != null)
+                        if (unlimitedEnergy)
                         {
-                            for (int i = 0; i < deacts.Length; i++)
+                            if (photonPcEnergyStartFld != null && photonPcEnergyCurFld != null)
                             {
-                                Component c = deacts[i] as Component;
-                                if (c == null) continue;
-                                if (levelToActivateFld != null) levelToActivateFld.SetValue(c, 0);
-                                if (c.gameObject != null && !c.gameObject.activeSelf)
-                                {
-                                    c.gameObject.SetActive(true);
-                                }
+                                float startVal = (float)photonPcEnergyStartFld.GetValue(pc);
+                                photonPcEnergyCurFld.SetValue(pc, startVal);
                             }
+                            if (photonPcDebugEnergyFld != null) photonPcDebugEnergyFld.SetValue(pc, true);
+                        }
+
+                        if (infiniteJumps)
+                        {
+                            if (photonPcJumpCdFld != null) photonPcJumpCdFld.SetValue(pc, 0f);
+                            if (photonPcJumpBufferFld != null) photonPcJumpBufferFld.SetValue(pc, 1f);
+                            if (photonPcJumpExtraFld != null) photonPcJumpExtraFld.SetValue(pc, 99);
+                        }
+
+                        bool isSpeedModified = Mathf.Abs(walkSpeedMultiplier - 1.0f) > 0.05f ||
+                                               Mathf.Abs(sprintSpeedMultiplier - 1.0f) > 0.05f ||
+                                               Mathf.Abs(crouchSpeedMultiplier - 1.0f) > 0.05f;
+
+                        if (isSpeedModified)
+                        {
+                            if (cachedBaseMove <= 0.01f && pcOriginalMoveSpeedFld != null) cachedBaseMove = Convert.ToSingle(pcOriginalMoveSpeedFld.GetValue(pc));
+                            if (cachedBaseSprint <= 0.01f && pcOriginalSprintSpeedFld != null) cachedBaseSprint = Convert.ToSingle(pcOriginalSprintSpeedFld.GetValue(pc));
+                            if (cachedBaseCrouch <= 0.01f && pcOriginalCrouchSpeedFld != null) cachedBaseCrouch = Convert.ToSingle(pcOriginalCrouchSpeedFld.GetValue(pc));
+
+                            float baseMove = (cachedBaseMove > 0.01f) ? cachedBaseMove : 0.5f;
+                            float baseSprint = (cachedBaseSprint > 0.01f) ? cachedBaseSprint : 1.0f;
+                            float baseCrouch = (cachedBaseCrouch > 0.01f) ? cachedBaseCrouch : 1.0f;
+
+                            if (photonPcMoveSpeedFld != null) photonPcMoveSpeedFld.SetValue(pc, baseMove * walkSpeedMultiplier);
+                            if (photonPcSprintSpeedFld != null) photonPcSprintSpeedFld.SetValue(pc, baseSprint * sprintSpeedMultiplier);
+                            if (photonPcCrouchSpeedFld != null) photonPcCrouchSpeedFld.SetValue(pc, baseCrouch * crouchSpeedMultiplier);
                         }
                     }
                 }
@@ -1122,32 +1419,22 @@ namespace CustomIngameMenu
                     if (roundDirectorType != null && roundDirectorInstFld != null)
                     {
                         object rd = roundDirectorInstFld.GetValue(null);
-                        if (rd != null)
+                        if (rd != null && rdHaulGoalFld != null && rdCurrentHaulFld != null)
                         {
-                            if (rdHaulGoalFld != null && rdCurrentHaulFld != null)
-                            {
-                                int curHaul = Convert.ToInt32(rdCurrentHaulFld.GetValue(rd));
-                                rdHaulGoalFld.SetValue(rd, curHaul);
-                            }
+                            int curHaul = Convert.ToInt32(rdCurrentHaulFld.GetValue(rd));
+                            rdHaulGoalFld.SetValue(rd, curHaul);
                         }
                     }
 
-                    if (extractionPointType != null)
+                    for (int i = 0; i < cachedExtractionPoints.Count; i++)
                     {
-                        UnityEngine.Object[] points = UnityEngine.Object.FindObjectsOfType(extractionPointType);
-                        if (points != null)
+                        Component ep = cachedExtractionPoints[i];
+                        if (ep == null) continue;
+                        if (epHaulGoalFld != null) epHaulGoalFld.SetValue(ep, 0);
+                        if (epIsLockedFld != null) epIsLockedFld.SetValue(ep, false);
+                        if (epUpdateLockMethod != null)
                         {
-                            for (int i = 0; i < points.Length; i++)
-                            {
-                                Component ep = points[i] as Component;
-                                if (ep == null) continue;
-                                if (epHaulGoalFld != null) epHaulGoalFld.SetValue(ep, 0);
-                                if (epIsLockedFld != null) epIsLockedFld.SetValue(ep, false);
-                                if (epUpdateLockMethod != null)
-                                {
-                                    try { epUpdateLockMethod.Invoke(ep, new object[] { false }); } catch { }
-                                }
-                            }
+                            try { epUpdateLockMethod.Invoke(ep, new object[] { false }); } catch { }
                         }
                     }
                 }
@@ -1181,10 +1468,10 @@ namespace CustomIngameMenu
                         }
                     }
 
-                    if (physGrabberFld != null)
+                    if (physGrabberFld != null && superGrab)
                     {
                         object grabber = physGrabberFld.GetValue(playerAvatar);
-                        if (grabber != null && superGrab)
+                        if (grabber != null)
                         {
                             float s = grabForceMultiplier;
                             if (grabStrengthFld != null) grabStrengthFld.SetValue(grabber, 4.0f * s);
@@ -1199,253 +1486,66 @@ namespace CustomIngameMenu
                     }
                 }
 
-                if (noDamage && playerHealthType != null)
-                {
-                    UnityEngine.Object[] allHealths = UnityEngine.Object.FindObjectsOfType(playerHealthType);
-                    if (allHealths != null)
-                    {
-                        for (int h = 0; h < allHealths.Length; h++)
-                        {
-                            Component ph = allHealths[h] as Component;
-                            if (ph == null) continue;
-                            if (healthGodModeFld != null) healthGodModeFld.SetValue(ph, true);
-                            if (invincibleTimerFld != null) invincibleTimerFld.SetValue(ph, 10f);
-                            if (healthFld != null) healthFld.SetValue(ph, 100);
-                            if (maxHealthFld != null) maxHealthFld.SetValue(ph, 100);
-                        }
-                    }
-                }
-
-                if (enemyDirectorType != null && enemyDirectorInstanceFld != null)
+                if (enemyDirectorType != null && enemyDirectorInstanceFld != null && enemyDirectorDebugNoVisionFld != null)
                 {
                     object ed = enemyDirectorInstanceFld.GetValue(null);
                     if (ed != null)
                     {
-                        FieldInfo nvFld = enemyDirectorType.GetField("debugNoVision", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (nvFld != null)
+                        IList nvList = enemyDirectorDebugNoVisionFld.GetValue(ed) as IList;
+                        if (nvList != null)
                         {
-                            IList nvList = nvFld.GetValue(ed) as IList;
-                            if (nvList != null)
+                            string sid = "local";
+                            if (playerAvatar != null && playerAvatarSteamIDFld != null)
                             {
-                                string sid = "local";
-                                if (playerAvatar != null)
-                                {
-                                    FieldInfo sidFld = playerAvatarType.GetField("steamID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    if (sidFld != null)
-                                    {
-                                        object sidVal = sidFld.GetValue(playerAvatar);
-                                        if (sidVal != null) sid = sidVal.ToString();
-                                    }
-                                }
-                                if (untouchable)
-                                {
-                                    if (!nvList.Contains(sid)) nvList.Add(sid);
-                                }
-                                else
-                                {
-                                    while (nvList.Contains(sid)) nvList.Remove(sid);
-                                }
+                                object sidVal = playerAvatarSteamIDFld.GetValue(playerAvatar);
+                                if (sidVal != null) sid = sidVal.ToString();
+                            }
+                            if (untouchable)
+                            {
+                                if (!nvList.Contains(sid)) nvList.Add(sid);
+                            }
+                            else
+                            {
+                                while (nvList.Contains(sid)) nvList.Remove(sid);
                             }
                         }
                     }
                 }
 
-                Type dchType = Type.GetType("DebugCommandHandler, Assembly-CSharp");
-                if (dchType != null)
+                if (tr != null && invisibility)
                 {
-                    FieldInfo dchInstFld = dchType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
-                    object dch = (dchInstFld != null) ? dchInstFld.GetValue(null) : null;
-                    if (dch != null)
+                    Renderer[] renderers = tr.GetComponentsInChildren<Renderer>();
+                    if (renderers != null)
                     {
-                        FieldInfo envFld = dchType.GetField("enemyNoVision", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (envFld != null)
+                        for (int i = 0; i < renderers.Length; i++)
                         {
-                            IList envList = envFld.GetValue(dch) as IList;
-                            if (envList != null)
-                            {
-                                string sid = "local";
-                                if (playerAvatar != null)
-                                {
-                                    FieldInfo sidFld = playerAvatarType.GetField("steamID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                                    if (sidFld != null)
-                                    {
-                                        object sidVal = sidFld.GetValue(playerAvatar);
-                                        if (sidVal != null) sid = sidVal.ToString();
-                                    }
-                                }
-                                if (untouchable)
-                                {
-                                    if (!envList.Contains(sid)) envList.Add(sid);
-                                }
-                                else
-                                {
-                                    while (envList.Contains(sid)) envList.Remove(sid);
-                                }
-                            }
+                            if (renderers[i] != null && renderers[i].enabled) renderers[i].enabled = false;
                         }
                     }
                 }
 
-                if (tr != null)
+                if (tr != null && (infiniteItemBattery || autoChargeHeldItem) && itemBatteryType != null)
                 {
-                    if (invisibility)
+                    batteryScanTimer += 0.1f;
+                    if (batteryScanTimer >= 0.5f)
                     {
-                        Renderer[] renderers = tr.GetComponentsInChildren<Renderer>();
-                        if (renderers != null)
+                        batteryScanTimer = 0f;
+                        Component[] batteries = tr.GetComponentsInChildren(itemBatteryType);
+                        if (batteries != null)
                         {
-                            for (int i = 0; i < renderers.Length; i++)
+                            for (int b = 0; b < batteries.Length; b++)
                             {
-                                if (renderers[i] != null) renderers[i].enabled = false;
-                            }
-                        }
-                    }
-
-                    if (infiniteItemBattery || autoChargeHeldItem)
-                    {
-                        if (itemBatteryType != null)
-                        {
-                            Component[] batteries = tr.GetComponentsInChildren(itemBatteryType);
-                            if (batteries != null)
-                            {
-                                for (int b = 0; b < batteries.Length; b++)
+                                Component ib = batteries[b];
+                                if (ib == null) continue;
+                                if (batteryBarsFld != null && batteryLifeFld != null && batteryLifeIntFld != null)
                                 {
-                                    Component ib = batteries[b];
-                                    if (ib == null) continue;
-
-                                    if (batteryBarsFld != null && batteryLifeFld != null && batteryLifeIntFld != null)
-                                    {
-                                        int bars = Convert.ToInt32(batteryBarsFld.GetValue(ib));
-                                        batteryLifeFld.SetValue(ib, 100f);
-                                        batteryLifeIntFld.SetValue(ib, bars);
-                                        if (drainRateFld != null) drainRateFld.SetValue(ib, 0f);
-                                    }
+                                    int bars = Convert.ToInt32(batteryBarsFld.GetValue(ib));
+                                    batteryLifeFld.SetValue(ib, 100f);
+                                    batteryLifeIntFld.SetValue(ib, bars);
+                                    if (drainRateFld != null) drainRateFld.SetValue(ib, 0f);
                                 }
                             }
                         }
-                    }
-
-                    if (infiniteJumps && Input.GetKeyDown(KeyCode.Space))
-                    {
-                        Component rb = tr.GetComponent("Rigidbody");
-                        if (rb != null)
-                        {
-                            PropertyInfo velProp = rb.GetType().GetProperty("velocity");
-                            if (velProp != null)
-                            {
-                                Vector3 cur = (Vector3)velProp.GetValue(rb, null);
-                                velProp.SetValue(rb, new Vector3(cur.x, 7.5f, cur.z), null);
-                            }
-                        }
-                        else
-                        {
-                            tr.position += Vector3.up * 1.5f;
-                        }
-                    }
-                }
-
-                if (photonPlayerControllerType != null)
-                {
-                    FieldInfo instFld = photonPlayerControllerType.GetField("instance", BindingFlags.Public | BindingFlags.Static);
-                    object pc = (instFld != null) ? instFld.GetValue(null) : null;
-                    if (pc != null)
-                    {
-                        if (unlimitedEnergy)
-                        {
-                            FieldInfo energyCur = photonPlayerControllerType.GetField("EnergyCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            FieldInfo energyStart = photonPlayerControllerType.GetField("EnergyStart", BindingFlags.Public | BindingFlags.Instance);
-                            float startVal = (energyStart != null) ? (float)energyStart.GetValue(pc) : 100f;
-                            if (energyCur != null) energyCur.SetValue(pc, startVal);
-
-                            FieldInfo debugEnergyFld = photonPlayerControllerType.GetField("DebugEnergy", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (debugEnergyFld != null) debugEnergyFld.SetValue(pc, true);
-                        }
-
-                        if (infiniteJumps)
-                        {
-                            FieldInfo jumpCd = photonPlayerControllerType.GetField("JumpCooldown", BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (jumpCd != null) jumpCd.SetValue(pc, 0f);
-
-                            FieldInfo jumpBuffer = photonPlayerControllerType.GetField("JumpGroundedBuffer", BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (jumpBuffer != null) jumpBuffer.SetValue(pc, 1f);
-
-                            FieldInfo jumpExtra = photonPlayerControllerType.GetField("JumpExtraCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (jumpExtra != null) jumpExtra.SetValue(pc, 99);
-                        }
-
-                        bool isSpeedModified = Mathf.Abs(walkSpeedMultiplier - 1.0f) > 0.05f ||
-                                               Mathf.Abs(sprintSpeedMultiplier - 1.0f) > 0.05f ||
-                                               Mathf.Abs(crouchSpeedMultiplier - 1.0f) > 0.05f;
-
-                        if (isSpeedModified)
-                        {
-                            float baseMove = (pcOriginalMoveSpeedFld != null) ? Convert.ToSingle(pcOriginalMoveSpeedFld.GetValue(pc)) : 0.5f;
-                            float baseSprint = (pcOriginalSprintSpeedFld != null) ? Convert.ToSingle(pcOriginalSprintSpeedFld.GetValue(pc)) : 1.0f;
-                            float baseCrouch = (pcOriginalCrouchSpeedFld != null) ? Convert.ToSingle(pcOriginalCrouchSpeedFld.GetValue(pc)) : 1.0f;
-
-                            if (baseMove < 0.01f) baseMove = 0.5f;
-                            if (baseSprint < 0.01f) baseSprint = 1.0f;
-                            if (baseCrouch < 0.01f) baseCrouch = 1.0f;
-
-                            FieldInfo moveSpeedFld = photonPlayerControllerType.GetField("MoveSpeed", BindingFlags.Public | BindingFlags.Instance);
-                            if (moveSpeedFld != null)
-                            {
-                                moveSpeedFld.SetValue(pc, baseMove * walkSpeedMultiplier);
-                            }
-
-                            FieldInfo sprintSpeedFld = photonPlayerControllerType.GetField("SprintSpeed", BindingFlags.Public | BindingFlags.Instance);
-                            if (sprintSpeedFld != null)
-                            {
-                                sprintSpeedFld.SetValue(pc, baseSprint * sprintSpeedMultiplier);
-                            }
-
-                            FieldInfo crouchSpeedFld = photonPlayerControllerType.GetField("CrouchSpeed", BindingFlags.Public | BindingFlags.Instance);
-                            if (crouchSpeedFld != null)
-                            {
-                                crouchSpeedFld.SetValue(pc, baseCrouch * crouchSpeedMultiplier);
-                            }
-                        }
-                        else
-                        {
-                            if (pcOriginalMoveSpeedFld != null)
-                            {
-                                float origMove = Convert.ToSingle(pcOriginalMoveSpeedFld.GetValue(pc));
-                                if (origMove > 0.01f)
-                                {
-                                    FieldInfo moveSpeedFld = photonPlayerControllerType.GetField("MoveSpeed", BindingFlags.Public | BindingFlags.Instance);
-                                    if (moveSpeedFld != null) moveSpeedFld.SetValue(pc, origMove);
-                                }
-                            }
-
-                            if (pcOriginalSprintSpeedFld != null)
-                            {
-                                float origSprint = Convert.ToSingle(pcOriginalSprintSpeedFld.GetValue(pc));
-                                if (origSprint > 0.01f)
-                                {
-                                    FieldInfo sprintSpeedFld = photonPlayerControllerType.GetField("SprintSpeed", BindingFlags.Public | BindingFlags.Instance);
-                                    if (sprintSpeedFld != null) sprintSpeedFld.SetValue(pc, origSprint);
-                                }
-                            }
-
-                            if (pcOriginalCrouchSpeedFld != null)
-                            {
-                                float origCrouch = Convert.ToSingle(pcOriginalCrouchSpeedFld.GetValue(pc));
-                                if (origCrouch > 0.01f)
-                                {
-                                    FieldInfo crouchSpeedFld = photonPlayerControllerType.GetField("CrouchSpeed", BindingFlags.Public | BindingFlags.Instance);
-                                    if (crouchSpeedFld != null) crouchSpeedFld.SetValue(pc, origCrouch);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (unlimitedEnergy && controllerInst != null)
-                {
-                    object ctrl = controllerInst.GetValue(null, null);
-                    if (ctrl != null)
-                    {
-                        FieldInfo bs = ctrl.GetType().GetField("debugBlockSprint", BindingFlags.Public | BindingFlags.Instance);
-                        if (bs != null) bs.SetValue(ctrl, false);
                     }
                 }
 
@@ -1465,7 +1565,6 @@ namespace CustomIngameMenu
                             fullbrightLight.color = new Color(0.95f, 0.95f, 1.0f);
                             fullbrightLight.shadows = LightShadows.None;
                         }
-
                         if (fullbrightLight != null)
                         {
                             fullbrightLight.enabled = true;
@@ -1475,17 +1574,12 @@ namespace CustomIngameMenu
                 }
                 else
                 {
-                    if (fullbrightLight != null && fullbrightLight.enabled)
-                    {
-                        fullbrightLight.enabled = false;
-                    }
+                    if (fullbrightLight != null && fullbrightLight.enabled) fullbrightLight.enabled = false;
                 }
 
                 if (infiniteStationCharge && chargingStationType != null)
                 {
-                    object csInst = null;
-                    if (chargingStationInstFld != null) csInst = chargingStationInstFld.GetValue(null);
-                    if (csInst == null) csInst = UnityEngine.Object.FindObjectOfType(chargingStationType);
+                    object csInst = (chargingStationInstFld != null) ? chargingStationInstFld.GetValue(null) : null;
                     if (csInst != null)
                     {
                         if (chargeTotalFld != null) chargeTotalFld.SetValue(csInst, 100);
@@ -1495,51 +1589,95 @@ namespace CustomIngameMenu
                         if (chargeScaleTargetFld != null) chargeScaleTargetFld.SetValue(csInst, 1f);
                     }
                 }
+            }
+            catch { }
+        }
 
-                periodicHackTimer += Time.deltaTime;
-                if (periodicHackTimer >= 1.0f || (prevUnbreakableItems != unbreakableItems))
+        private void ApplyPeriodicSlowScans()
+        {
+            try
+            {
+                // Update cached extraction points for ESP (runs every 1.5s instead of in OnGUI!)
+                if (extractionPointType != null)
                 {
-                    periodicHackTimer = 0f;
-                    prevUnbreakableItems = unbreakableItems;
+                    cachedExtractionPoints.Clear();
 
-                    if (impactDetectorType != null)
+                    if (roundDirectorType != null && roundDirectorInstFld != null && roundDirectorEpCurFld != null)
                     {
-                        UnityEngine.Object[] detectors = UnityEngine.Object.FindObjectsOfType(impactDetectorType);
-                        if (detectors != null)
+                        object rd = roundDirectorInstFld.GetValue(null);
+                        if (rd != null)
                         {
-                            for (int i = 0; i < detectors.Length; i++)
+                            Component epCur = roundDirectorEpCurFld.GetValue(rd) as Component;
+                            if (epCur != null && !cachedExtractionPoints.Contains(epCur)) cachedExtractionPoints.Add(epCur);
+
+                            if (roundDirectorEpListFld != null)
                             {
-                                Component det = detectors[i] as Component;
-                                if (det == null) continue;
-                                if (idIsIndestructibleFld != null) idIsIndestructibleFld.SetValue(det, unbreakableItems);
-                                if (idDestroyDisableFld != null) idDestroyDisableFld.SetValue(det, unbreakableItems);
-                                if (idFragilityFld != null) idFragilityFld.SetValue(det, unbreakableItems ? 0f : 1f);
-                                if (idDurabilityFld != null) idDurabilityFld.SetValue(det, unbreakableItems ? 1000f : 1f);
+                                IList list = roundDirectorEpListFld.GetValue(rd) as IList;
+                                if (list != null)
+                                {
+                                    for (int l = 0; l < list.Count; l++)
+                                    {
+                                        GameObject go = list[l] as GameObject;
+                                        if (go != null)
+                                        {
+                                            Component epComp = go.GetComponent(extractionPointType);
+                                            if (epComp != null && !cachedExtractionPoints.Contains(epComp)) cachedExtractionPoints.Add(epComp);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (infiniteItemBattery && itemBatteryType != null)
+                    if (cachedExtractionPoints.Count == 0)
                     {
-                        UnityEngine.Object[] allBatteries = UnityEngine.Object.FindObjectsOfType(itemBatteryType);
-                        if (allBatteries != null)
+                        UnityEngine.Object[] points = UnityEngine.Object.FindObjectsOfType(extractionPointType);
+                        if (points != null)
                         {
-                            for (int i = 0; i < allBatteries.Length; i++)
+                            for (int i = 0; i < points.Length; i++)
                             {
-                                Component ib = allBatteries[i] as Component;
-                                if (ib == null) continue;
-                                if (batteryBarsFld != null && batteryLifeFld != null && batteryLifeIntFld != null)
-                                {
-                                    int bars = Convert.ToInt32(batteryBarsFld.GetValue(ib));
-                                    float life = Convert.ToSingle(batteryLifeFld.GetValue(ib));
-                                    if (life < 99.9f)
-                                    {
-                                        batteryLifeFld.SetValue(ib, 100f);
-                                        batteryLifeIntFld.SetValue(ib, bars);
-                                    }
-                                    if (drainRateFld != null) drainRateFld.SetValue(ib, 0f);
-                                }
+                                Component ep = points[i] as Component;
+                                if (ep != null && !cachedExtractionPoints.Contains(ep)) cachedExtractionPoints.Add(ep);
                             }
+                        }
+                    }
+                }
+
+                // Unlock shop items (only on state change)
+                if (itemDeactivatedUntilLevelType != null && unlockShopItems != prevUnlockShopItems)
+                {
+                    prevUnlockShopItems = unlockShopItems;
+                    if (unlockShopItems)
+                    {
+                        UnityEngine.Object[] deacts = UnityEngine.Object.FindObjectsOfType(itemDeactivatedUntilLevelType);
+                        if (deacts != null)
+                        {
+                            for (int i = 0; i < deacts.Length; i++)
+                            {
+                                Component c = deacts[i] as Component;
+                                if (c == null) continue;
+                                if (levelToActivateFld != null) levelToActivateFld.SetValue(c, 0);
+                                if (c.gameObject != null && !c.gameObject.activeSelf) c.gameObject.SetActive(true);
+                            }
+                        }
+                    }
+                }
+
+                // Unbreakable items (only on state change)
+                if (impactDetectorType != null && unbreakableItems != prevUnbreakableItems)
+                {
+                    prevUnbreakableItems = unbreakableItems;
+                    UnityEngine.Object[] detectors = UnityEngine.Object.FindObjectsOfType(impactDetectorType);
+                    if (detectors != null)
+                    {
+                        for (int i = 0; i < detectors.Length; i++)
+                        {
+                            Component det = detectors[i] as Component;
+                            if (det == null) continue;
+                            if (idIsIndestructibleFld != null) idIsIndestructibleFld.SetValue(det, unbreakableItems);
+                            if (idDestroyDisableFld != null) idDestroyDisableFld.SetValue(det, unbreakableItems);
+                            if (idFragilityFld != null) idFragilityFld.SetValue(det, unbreakableItems ? 0f : 1f);
+                            if (idDurabilityFld != null) idDurabilityFld.SetValue(det, unbreakableItems ? 1000f : 1f);
                         }
                     }
                 }
@@ -1551,12 +1689,110 @@ namespace CustomIngameMenu
         {
             if (texturesInitialized) return;
 
-            texBackground = MakeTex(2, 2, new Color(0.10f, 0.11f, 0.14f, 0.98f));
-            texSidebar = MakeTex(2, 2, new Color(0.06f, 0.07f, 0.09f, 1f));
-            texCard = MakeTex(2, 2, new Color(0.14f, 0.16f, 0.20f, 0.95f));
-            texAccent = MakeTex(2, 2, new Color(0.25f, 0.45f, 0.95f, 1f));
+            texBackground = MakeTex(2, 2, new Color(0.047f, 0.051f, 0.067f, 0.98f)); // #0C0D11 Deep Obsidian
+            texSidebar = MakeTex(2, 2, new Color(0.063f, 0.071f, 0.094f, 1f));     // #101218
+            texHeader = MakeTex(2, 2, new Color(0.055f, 0.063f, 0.082f, 1f));      // #0E1015
+            texCard = MakeTex(2, 2, new Color(0.082f, 0.094f, 0.125f, 0.96f));     // #151820
+            texCardBorder = MakeTex(2, 2, new Color(0.141f, 0.161f, 0.216f, 1f)); // #242937
+            texAccent = MakeTex(2, 2, new Color(0.486f, 0.361f, 0.988f, 1f));     // #7C5CFC Electric Violet
+            texAccentCyan = MakeTex(2, 2, new Color(0.0f, 0.824f, 1.0f, 1f));      // #00D2FF Neon Cyan
+            texToggleOn = MakeTex(2, 2, new Color(0.063f, 0.725f, 0.506f, 1f));    // #10B981 Emerald ON
+            texToggleOff = MakeTex(2, 2, new Color(0.125f, 0.141f, 0.188f, 1f));   // #202430 Dark Slate OFF
+            texBtnNormal = MakeTex(2, 2, new Color(0.118f, 0.137f, 0.184f, 1f));   // #1E232F
+            texBtnHover = MakeTex(2, 2, new Color(0.165f, 0.192f, 0.259f, 1f));    // #2A3142
             texWhite = MakeTex(2, 2, Color.white);
-            texDarkBadge = MakeTex(2, 2, new Color(0.05f, 0.06f, 0.08f, 0.90f));
+            texDarkBadge = MakeTex(2, 2, new Color(0.04f, 0.04f, 0.05f, 0.95f));
+
+            styleTitle = new GUIStyle();
+            styleTitle.fontSize = 15;
+            styleTitle.fontStyle = FontStyle.Bold;
+            styleTitle.normal.textColor = Color.white;
+            styleTitle.alignment = TextAnchor.MiddleLeft;
+
+            styleSubtitle = new GUIStyle();
+            styleSubtitle.fontSize = 10;
+            styleSubtitle.fontStyle = FontStyle.Bold;
+            styleSubtitle.normal.textColor = new Color(0.486f, 0.361f, 0.988f);
+            styleSubtitle.alignment = TextAnchor.MiddleLeft;
+
+            styleTabActive = new GUIStyle();
+            styleTabActive.fontSize = 12;
+            styleTabActive.fontStyle = FontStyle.Bold;
+            styleTabActive.normal.background = MakeTex(2, 2, new Color(0.118f, 0.137f, 0.184f, 0.9f));
+            styleTabActive.normal.textColor = new Color(0.0f, 0.824f, 1.0f);
+            styleTabActive.padding = new RectOffset(16, 8, 8, 8);
+            styleTabActive.alignment = TextAnchor.MiddleLeft;
+
+            styleTabInactive = new GUIStyle();
+            styleTabInactive.fontSize = 12;
+            styleTabInactive.normal.background = MakeTex(2, 2, Color.clear);
+            styleTabInactive.normal.textColor = new Color(0.55f, 0.60f, 0.70f);
+            styleTabInactive.hover.textColor = Color.white;
+            styleTabInactive.hover.background = MakeTex(2, 2, new Color(0.10f, 0.11f, 0.14f, 0.5f));
+            styleTabInactive.padding = new RectOffset(16, 8, 8, 8);
+            styleTabInactive.alignment = TextAnchor.MiddleLeft;
+
+            styleHeader = new GUIStyle();
+            styleHeader.fontSize = 12;
+            styleHeader.fontStyle = FontStyle.Bold;
+            styleHeader.normal.textColor = new Color(0.0f, 0.824f, 1.0f);
+            styleHeader.alignment = TextAnchor.MiddleLeft;
+
+            styleLabelText = new GUIStyle();
+            styleLabelText.fontSize = 12;
+            styleLabelText.normal.textColor = new Color(0.88f, 0.90f, 0.95f);
+            styleLabelText.alignment = TextAnchor.MiddleLeft;
+
+            styleToggleOn = new GUIStyle(GUI.skin.button);
+            styleToggleOn.fontSize = 11;
+            styleToggleOn.fontStyle = FontStyle.Bold;
+            styleToggleOn.normal.background = texToggleOn;
+            styleToggleOn.normal.textColor = Color.white;
+            styleToggleOn.hover.background = texToggleOn;
+            styleToggleOn.hover.textColor = Color.white;
+            styleToggleOn.alignment = TextAnchor.MiddleCenter;
+
+            styleToggleOff = new GUIStyle(GUI.skin.button);
+            styleToggleOff.fontSize = 11;
+            styleToggleOff.normal.background = texToggleOff;
+            styleToggleOff.normal.textColor = new Color(0.55f, 0.60f, 0.70f);
+            styleToggleOff.hover.background = MakeTex(2, 2, new Color(0.16f, 0.18f, 0.24f, 1f));
+            styleToggleOff.hover.textColor = Color.white;
+            styleToggleOff.alignment = TextAnchor.MiddleCenter;
+
+            styleStepperBtn = new GUIStyle(GUI.skin.button);
+            styleStepperBtn.fontSize = 13;
+            styleStepperBtn.fontStyle = FontStyle.Bold;
+            styleStepperBtn.normal.background = texBtnNormal;
+            styleStepperBtn.normal.textColor = new Color(0.0f, 0.824f, 1.0f);
+            styleStepperBtn.hover.background = texBtnHover;
+            styleStepperBtn.hover.textColor = Color.white;
+            styleStepperBtn.alignment = TextAnchor.MiddleCenter;
+
+            styleStepperVal = new GUIStyle();
+            styleStepperVal.fontSize = 12;
+            styleStepperVal.fontStyle = FontStyle.Bold;
+            styleStepperVal.normal.textColor = Color.white;
+            styleStepperVal.normal.background = MakeTex(2, 2, new Color(0.06f, 0.07f, 0.10f, 0.9f));
+            styleStepperVal.alignment = TextAnchor.MiddleCenter;
+
+            styleActionBtn = new GUIStyle(GUI.skin.button);
+            styleActionBtn.fontSize = 12;
+            styleActionBtn.fontStyle = FontStyle.Bold;
+            styleActionBtn.normal.background = texBtnNormal;
+            styleActionBtn.normal.textColor = new Color(0.90f, 0.92f, 0.96f);
+            styleActionBtn.hover.background = texBtnHover;
+            styleActionBtn.hover.textColor = Color.white;
+            styleActionBtn.alignment = TextAnchor.MiddleCenter;
+
+            styleCloseBtn = new GUIStyle(GUI.skin.button);
+            styleCloseBtn.fontSize = 13;
+            styleCloseBtn.fontStyle = FontStyle.Bold;
+            styleCloseBtn.normal.background = MakeTex(2, 2, new Color(0.22f, 0.08f, 0.08f, 0.8f));
+            styleCloseBtn.normal.textColor = new Color(1f, 0.4f, 0.4f);
+            styleCloseBtn.hover.background = MakeTex(2, 2, new Color(0.8f, 0.15f, 0.15f, 0.9f));
+            styleCloseBtn.hover.textColor = Color.white;
+            styleCloseBtn.alignment = TextAnchor.MiddleCenter;
 
             espLabelNormal = new GUIStyle();
             espLabelNormal.fontSize = 11;
@@ -1603,64 +1839,69 @@ namespace CustomIngameMenu
 
             InitTextures();
 
-            GUI.depth = 10;
-
-            if (espValuables)
+            if (Event.current != null && Event.current.type == EventType.Repaint)
             {
-                DrawValuablesESP();
-            }
+                GUI.depth = 10;
 
-            if (espEnemies)
-            {
-                DrawEnemiesESP();
-            }
+                if (espValuables)
+                {
+                    DrawValuablesESP();
+                }
 
-            if (espExtraction)
-            {
-                DrawExtractionESP();
+                if (espEnemies)
+                {
+                    DrawEnemiesESP();
+                }
+
+                if (espExtraction)
+                {
+                    DrawExtractionESP();
+                }
             }
 
             if (!isOpen) return;
 
             GUI.depth = -100;
-            GUIStyle emptyWindow = new GUIStyle();
-            winRect = GUI.Window(99991, winRect, DrawMenuContent, "", emptyWindow);
+            winRect = GUI.Window(99991, winRect, DrawModernMenuContent, "", emptyWindow);
         }
 
         private Camera GetActiveCamera()
         {
+            _camCacheTimer += Time.deltaTime;
+            if (_cachedCam != null && _cachedCam.isActiveAndEnabled && _camCacheTimer < 0.5f)
+            {
+                return _cachedCam;
+            }
+            _camCacheTimer = 0f;
+
             if (cameraUtilsType != null && cameraUtilsInstanceFld != null && cameraUtilsMainCameraFld != null)
             {
                 object inst = cameraUtilsInstanceFld.GetValue(null);
                 if (inst != null)
                 {
                     Camera c = cameraUtilsMainCameraFld.GetValue(inst) as Camera;
-                    if (c != null && c.isActiveAndEnabled) return c;
-                }
-            }
-
-            Camera cam = Camera.main;
-            if (cam != null && cam.isActiveAndEnabled) return cam;
-
-            foreach (Camera c in Camera.allCameras)
-            {
-                if (c != null && c.isActiveAndEnabled)
-                {
-                    if (c.CompareTag("MainCamera") || c.name.ToLower().Contains("player") || c.name.ToLower().Contains("main"))
+                    if (c != null && c.isActiveAndEnabled)
                     {
+                        _cachedCam = c;
                         return c;
                     }
                 }
             }
 
-            if (Camera.current != null && Camera.current.isActiveAndEnabled) return Camera.current;
-
-            foreach (Camera c in Camera.allCameras)
+            Camera cam = Camera.main;
+            if (cam != null && cam.isActiveAndEnabled)
             {
-                if (c != null && c.isActiveAndEnabled) return c;
+                _cachedCam = cam;
+                return cam;
             }
 
-            return null;
+            if (Camera.current != null && Camera.current.isActiveAndEnabled)
+            {
+                _cachedCam = Camera.current;
+                return Camera.current;
+            }
+
+            return _cachedCam;
         }
 
         private void DrawBoxOutline(Rect r, Color c, float thickness)
@@ -1739,8 +1980,13 @@ namespace CustomIngameMenu
                     if (item == null || item.gameObject == null || !item.gameObject.activeInHierarchy) continue;
 
                     Vector3 centerPos = item.transform.position;
-                    float heightY = 0.5f;
+                    Vector3 diff = centerPos - camPos;
+                    if (Vector3.Dot(camFwd, diff) <= 0.15f) continue;
 
+                    float dist = diff.magnitude;
+                    if (dist > espMaxDistance || dist < 0.2f) continue;
+
+                    float heightY = 0.5f;
                     if (physGrabObjectType != null)
                     {
                         Component phys = item.GetComponent(physGrabObjectType);
@@ -1758,12 +2004,6 @@ namespace CustomIngameMenu
                             }
                         }
                     }
-
-                    Vector3 diff = centerPos - camPos;
-                    if (Vector3.Dot(camFwd, diff) <= 0.15f) continue;
-
-                    float dist = diff.magnitude;
-                    if (dist > espMaxDistance || dist < 0.2f) continue;
 
                     float price = 0f;
                     if (dollarValueCurrentFld != null)
@@ -1803,9 +2043,7 @@ namespace CustomIngameMenu
                         DrawCornerBox(new Rect(boxX, boxY, boxW, boxH), (isHighValue && espGoldBadgeHighValue) ? new Color(1.0f, 0.85f, 0.25f, 0.9f) : new Color(0.2f, 1.0f, 0.45f, 0.8f), 1.5f, 6f);
                     }
 
-                    string rawName = item.gameObject.name;
-                    rawName = rawName.Replace("(Clone)", "").Replace("Valuable", "").Replace("Wizard", "").Replace("Arctic", "").Replace("Surplus", "").Trim();
-                    if (string.IsNullOrEmpty(rawName)) rawName = "Item";
+                    string rawName = GetCleanItemName(item.gameObject.name);
 
                     string labelText = "";
                     if (espShowPrice && price > 0f)
@@ -1877,25 +2115,27 @@ namespace CustomIngameMenu
                     Component ep = list[i] as Component;
                     if (ep == null || ep.gameObject == null || !ep.gameObject.activeInHierarchy) continue;
 
-                    Type epType = ep.GetType();
-                    FieldInfo enemyFld = epType.GetField("Enemy", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    FieldInfo spawnedFld = epType.GetField("Spawned", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-                    if (spawnedFld != null)
+                    if (epEnemyFld == null || epSpawnedFld == null)
                     {
-                        object sp = spawnedFld.GetValue(ep);
+                        Type epType = ep.GetType();
+                        if (epEnemyFld == null) epEnemyFld = epType.GetField("Enemy", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (epSpawnedFld == null) epSpawnedFld = epType.GetField("Spawned", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    }
+
+                    if (epSpawnedFld != null)
+                    {
+                        object sp = epSpawnedFld.GetValue(ep);
                         if (sp is bool && !((bool)sp)) continue;
                     }
 
-                    Component enemy = (enemyFld != null) ? enemyFld.GetValue(ep) as Component : ep.GetComponentInChildren<MonoBehaviour>();
+                    Component enemy = (epEnemyFld != null) ? epEnemyFld.GetValue(ep) as Component : null;
+                    if (enemy == null) enemy = ep.GetComponentInChildren<MonoBehaviour>();
                     if (enemy == null || enemy.gameObject == null || !enemy.gameObject.activeInHierarchy) continue;
 
                     Vector3 centerPos = enemy.transform.position;
-                    Type enType = enemy.GetType();
-                    FieldInfo centerFld = enType.GetField("CenterTransform", BindingFlags.Public | BindingFlags.Instance);
-                    if (centerFld != null)
+                    if (enCenterTransformFld != null)
                     {
-                        Transform ct = centerFld.GetValue(enemy) as Transform;
+                        Transform ct = enCenterTransformFld.GetValue(enemy) as Transform;
                         if (ct != null) centerPos = ct.position;
                     }
 
@@ -1932,37 +2172,33 @@ namespace CustomIngameMenu
                     }
 
                     string eName = "Inimigo";
-                    FieldInfo nameFld = epType.GetField("enemyName", BindingFlags.Public | BindingFlags.Instance);
-                    if (nameFld != null)
+                    if (enemyNameFld != null)
                     {
-                        object nVal = nameFld.GetValue(ep);
-                        if (nVal != null && !string.IsNullOrEmpty(nVal.ToString())) eName = nVal.ToString();
+                        object nVal = enemyNameFld.GetValue(ep);
+                        if (nVal != null) eName = nVal.ToString();
                     }
                     else
                     {
-                        eName = enemy.gameObject.name.Replace("(Clone)", "").Trim();
+                        eName = GetCleanItemName(enemy.gameObject.name);
                     }
 
                     int curHp = 100;
                     int maxHp = 100;
                     bool hasHealth = false;
 
-                    FieldInfo hpFld = enType.GetField("Health", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (hpFld != null)
+                    if (enemyHealthCompFld != null)
                     {
-                        Component eh = hpFld.GetValue(enemy) as Component;
+                        Component eh = enemyHealthCompFld.GetValue(enemy) as Component;
                         if (eh != null)
                         {
-                            FieldInfo curHpFld = eh.GetType().GetField("healthCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            FieldInfo maxHpFld = eh.GetType().GetField("health", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (curHpFld != null)
+                            if (healthCurrentFld != null)
                             {
-                                curHp = Convert.ToInt32(curHpFld.GetValue(eh));
+                                curHp = Convert.ToInt32(healthCurrentFld.GetValue(eh));
                                 hasHealth = true;
                             }
-                            if (maxHpFld != null)
+                            if (healthMaxFld != null)
                             {
-                                maxHp = Mathf.Max(1, Convert.ToInt32(maxHpFld.GetValue(eh)));
+                                maxHp = Mathf.Max(1, Convert.ToInt32(healthMaxFld.GetValue(eh)));
                             }
                         }
                     }
@@ -2016,7 +2252,7 @@ namespace CustomIngameMenu
 
             try
             {
-                InitReflection();
+                if (cachedExtractionPoints.Count == 0) return;
 
                 Vector3 camPos = cam.transform.position;
                 Vector3 camFwd = cam.transform.forward;
@@ -2038,158 +2274,83 @@ namespace CustomIngameMenu
                     }
                 }
 
-                List<Vector3> pointPositions = new List<Vector3>();
-                List<string> pointLabels = new List<string>();
-                List<Color> pointColors = new List<Color>();
-
-                if (extractionPointType != null)
+                for (int i = 0; i < cachedExtractionPoints.Count; i++)
                 {
-                    List<Component> allExtractionPoints = new List<Component>();
+                    Component ep = cachedExtractionPoints[i];
+                    if (ep == null || ep.gameObject == null) continue;
 
-                    if (roundDirectorType != null && roundDirectorInstFld != null)
+                    Vector3 drawPos = ep.transform.position;
+                    if (epPlatformFld != null)
                     {
-                        object rd = roundDirectorInstFld.GetValue(null);
-                        if (rd != null)
-                        {
-                            FieldInfo epCurFld = roundDirectorType.GetField("extractionPointCurrent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (epCurFld != null)
-                            {
-                                Component epCur = epCurFld.GetValue(rd) as Component;
-                                if (epCur != null && !allExtractionPoints.Contains(epCur))
-                                {
-                                    allExtractionPoints.Add(epCur);
-                                }
-                            }
-
-                            FieldInfo epListFld = roundDirectorType.GetField("extractionPointList", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                            if (epListFld != null)
-                            {
-                                IList list = epListFld.GetValue(rd) as IList;
-                                if (list != null)
-                                {
-                                    for (int l = 0; l < list.Count; l++)
-                                    {
-                                        GameObject go = list[l] as GameObject;
-                                        if (go != null)
-                                        {
-                                            Component epComp = go.GetComponent(extractionPointType);
-                                            if (epComp != null && !allExtractionPoints.Contains(epComp))
-                                            {
-                                                allExtractionPoints.Add(epComp);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        Transform pt = epPlatformFld.GetValue(ep) as Transform;
+                        if (pt != null) drawPos = pt.position;
                     }
 
-                    UnityEngine.Object[] points = UnityEngine.Object.FindObjectsOfType(extractionPointType);
-                    if (points != null)
-                    {
-                        for (int i = 0; i < points.Length; i++)
-                        {
-                            Component ep = points[i] as Component;
-                            if (ep != null && !allExtractionPoints.Contains(ep))
-                            {
-                                allExtractionPoints.Add(ep);
-                            }
-                        }
-                    }
-
-                    for (int i = 0; i < allExtractionPoints.Count; i++)
-                    {
-                        Component ep = allExtractionPoints[i];
-                        if (ep == null || ep.gameObject == null) continue;
-
-                        string stateStr = "";
-                        if (epCurrentStateFld != null)
-                        {
-                            object curSt = epCurrentStateFld.GetValue(ep);
-                            if (curSt != null) stateStr = curSt.ToString();
-                        }
-
-                        bool isComplete = (stateStr == "Complete" || stateStr == "TaxReturn");
-                        if (!isComplete && epExtractionSurplusCompletedFld != null)
-                        {
-                            object val = epExtractionSurplusCompletedFld.GetValue(ep);
-                            if (val is bool && ((bool)val)) isComplete = true;
-                        }
-                        if (!isComplete && epIsCompletedRightAwayFld != null)
-                        {
-                            object val = epIsCompletedRightAwayFld.GetValue(ep);
-                            if (val is bool && ((bool)val)) isComplete = true;
-                        }
-
-                        if (espExtractionOnlyIncomplete && isComplete) continue;
-
-                        int quota = 0;
-                        if (epHaulGoalFld != null)
-                        {
-                            object hg = epHaulGoalFld.GetValue(ep);
-                            if (hg != null) quota = Convert.ToInt32(hg);
-                        }
-
-                        bool isDoorLocked = false;
-                        if (epIsLockedFld != null)
-                        {
-                            object lk = epIsLockedFld.GetValue(ep);
-                            if (lk is bool) isDoorLocked = (bool)lk;
-                        }
-
-                        if (espExtractionOnlyLocked && !isDoorLocked) continue;
-
-                        string labelText = "⛟ EXTRAÇÃO (VENDER ITENS)";
-                        if (isComplete) labelText += " [CONCLUÍDO]";
-                        else if (isDoorLocked) labelText += " [BLOQUEADO]";
-                        else if (quota <= 0) labelText += " [PRONTO]";
-                        else labelText += " [$" + quota.ToString("N0") + "]";
-
-                        Color pointColor = isComplete ? new Color(0.5f, 0.5f, 0.5f, 0.8f) :
-                                           (isDoorLocked ? new Color(1.0f, 0.25f, 0.25f, 0.9f) :
-                                           (quota <= 0 ? new Color(0.2f, 1.0f, 0.45f, 0.9f) : new Color(0.2f, 0.85f, 1.0f, 0.85f)));
-
-                        Vector3 drawPos = ep.transform.position;
-                        FieldInfo platFld = extractionPointType.GetField("platform", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (platFld != null)
-                        {
-                            Transform pt = platFld.GetValue(ep) as Transform;
-                            if (pt != null) drawPos = pt.position;
-                        }
-                        else
-                        {
-                            Transform platformTr = ep.transform.Find("Platform");
-                            if (platformTr != null) drawPos = platformTr.position;
-                        }
-
-                        pointPositions.Add(drawPos + Vector3.up * 0.8f);
-                        pointLabels.Add(labelText);
-                        pointColors.Add(pointColor);
-                    }
-                }
-
-                for (int i = 0; i < pointPositions.Count; i++)
-                {
-                    Vector3 pos = pointPositions[i];
-                    Vector3 diff = pos - camPos;
+                    Vector3 worldPos = drawPos + Vector3.up * 0.8f;
+                    Vector3 diff = worldPos - camPos;
                     if (Vector3.Dot(camFwd, diff) <= 0.01f) continue;
 
                     float dist = diff.magnitude;
                     if (dist > espMaxDistance) continue;
 
-                    Vector3 screenPos = cam.WorldToScreenPoint(pos);
+                    Vector3 screenPos = cam.WorldToScreenPoint(worldPos);
                     if (screenPos.z <= 0.05f) continue;
 
-                    float screenX = screenPos.x * scaleX;
-                    float screenY = (float)Screen.height - (screenPos.y * scaleY);
+                    string stateStr = "";
+                    if (epCurrentStateFld != null)
+                    {
+                        object curSt = epCurrentStateFld.GetValue(ep);
+                        if (curSt != null) stateStr = curSt.ToString();
+                    }
 
-                    string labelText = pointLabels[i];
+                    bool isComplete = (stateStr == "Complete" || stateStr == "TaxReturn");
+                    if (!isComplete && epExtractionSurplusCompletedFld != null)
+                    {
+                        object val = epExtractionSurplusCompletedFld.GetValue(ep);
+                        if (val is bool && ((bool)val)) isComplete = true;
+                    }
+                    if (!isComplete && epIsCompletedRightAwayFld != null)
+                    {
+                        object val = epIsCompletedRightAwayFld.GetValue(ep);
+                        if (val is bool && ((bool)val)) isComplete = true;
+                    }
+
+                    if (espExtractionOnlyIncomplete && isComplete) continue;
+
+                    int quota = 0;
+                    if (epHaulGoalFld != null)
+                    {
+                        object hg = epHaulGoalFld.GetValue(ep);
+                        if (hg != null) quota = Convert.ToInt32(hg);
+                    }
+
+                    bool isDoorLocked = false;
+                    if (epIsLockedFld != null)
+                    {
+                        object lk = epIsLockedFld.GetValue(ep);
+                        if (lk is bool) isDoorLocked = (bool)lk;
+                    }
+
+                    if (espExtractionOnlyLocked && !isDoorLocked) continue;
+
+                    string labelText = "⛟ EXTRAÇÃO (VENDER ITENS)";
+                    if (isComplete) labelText += " [CONCLUÍDO]";
+                    else if (isDoorLocked) labelText += " [BLOQUEADO]";
+                    else if (quota <= 0) labelText += " [PRONTO]";
+                    else labelText += " [$" + quota.ToString("N0") + "]";
+
                     if (espShowDistance)
                     {
                         labelText += " • " + dist.ToString("0") + "m";
                     }
 
-                    Color pointColor = pointColors[i];
+                    Color pointColor = isComplete ? new Color(0.5f, 0.5f, 0.5f, 0.8f) :
+                                       (isDoorLocked ? new Color(1.0f, 0.25f, 0.25f, 0.9f) :
+                                       (quota <= 0 ? new Color(0.2f, 1.0f, 0.45f, 0.9f) : new Color(0.2f, 0.85f, 1.0f, 0.85f)));
+
+                    float screenX = screenPos.x * scaleX;
+                    float screenY = (float)Screen.height - (screenPos.y * scaleY);
+
                     float badgeW = labelText.Length * 7.5f + 16f;
                     float badgeH = 18f;
                     float badgeX = screenX - (badgeW * 0.5f);
@@ -2210,108 +2371,168 @@ namespace CustomIngameMenu
             catch { }
         }
 
-        private void DrawMenuContent(int id)
+
+        private bool DrawModernToggle(string label, bool val)
         {
-            float sideWidth = 156f;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, styleLabelText, GUILayout.ExpandWidth(true));
 
-            GUI.DrawTexture(new Rect(0, 0, winRect.width, winRect.height), texBackground);
-            GUI.DrawTexture(new Rect(0, 0, sideWidth, winRect.height), texSidebar);
-            GUI.DrawTexture(new Rect(0, 0, winRect.width, 3), texAccent);
+            Color prevColor = GUI.color;
+            string stateText = val ? T("ATIVO", "ON") : T("INATIVO", "OFF");
+            GUIStyle btnStyle = val ? styleToggleOn : styleToggleOff;
 
-            GUI.color = new Color(0.25f, 0.55f, 1f);
-            GUI.Label(new Rect(18, 16, 120, 22), "PATCHZONE");
-            GUI.color = new Color(0.5f, 0.55f, 0.65f);
-            GUI.Label(new Rect(18, 34, 120, 18), "INTERNAL");
-
-            float creditY = winRect.height - 48f;
-            GUI.color = new Color(0.45f, 0.65f, 0.85f, 0.9f);
-            GUI.Label(new Rect(16, creditY, sideWidth - 24, 18), "Feito por Kayke");
-            GUI.color = new Color(0.35f, 0.42f, 0.5f, 0.85f);
-            GUI.Label(new Rect(16, creditY + 16, sideWidth - 24, 18), "@PatchZoneBR");
-
-            string[] tabs = Tabs[langIndex];
-            float tabY = 72f;
-            for (int i = 0; i < tabs.Length; i++)
+            if (GUILayout.Button(stateText, btnStyle, GUILayout.Width(76), GUILayout.Height(24)))
             {
-                Rect rTab = new Rect(10, tabY, sideWidth - 20, 32);
-                bool isActive = (currentTab == i);
+                val = !val;
+            }
+            GUI.color = prevColor;
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6);
+            return val;
+        }
 
-                GUI.color = isActive ? new Color(0.4f, 0.65f, 1.0f) : Color.white;
-                if (GUI.Button(rTab, (isActive ? "► " : "  ") + tabs[i]))
-                {
-                    currentTab = i;
-                }
-                tabY += 36;
+        private float DrawModernStepper(string label, float val, float step, float min, float max, string format)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, styleLabelText, GUILayout.ExpandWidth(true));
+
+            if (GUILayout.Button("-", styleStepperBtn, GUILayout.Width(28), GUILayout.Height(24)))
+            {
+                val = Mathf.Max(min, val - step);
             }
 
-            GUI.color = Color.white;
-            if (GUI.Button(new Rect(winRect.width - 32, 10, 22, 22), "X"))
+            GUILayout.Label(val.ToString(format), styleStepperVal, GUILayout.Width(54), GUILayout.Height(24));
+
+            if (GUILayout.Button("+", styleStepperBtn, GUILayout.Width(28), GUILayout.Height(24)))
+            {
+                val = Mathf.Min(max, val + step);
+            }
+
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6);
+            return val;
+        }
+
+        private void DrawModernMenuContent(int id)
+        {
+            float sideWidth = 175f;
+            float headerHeight = 44f;
+
+            // Window Base & Borders
+            GUI.DrawTexture(new Rect(0, 0, winRect.width, winRect.height), texBackground);
+            GUI.DrawTexture(new Rect(0, 0, sideWidth, winRect.height), texSidebar);
+            GUI.DrawTexture(new Rect(0, 0, winRect.width, headerHeight), texHeader);
+
+            // Subtle 1px borders
+            GUI.DrawTexture(new Rect(0, headerHeight, winRect.width, 1), texCardBorder);
+            GUI.DrawTexture(new Rect(sideWidth, headerHeight, 1, winRect.height - headerHeight), texCardBorder);
+            GUI.DrawTexture(new Rect(0, 0, winRect.width, 2), texAccent);
+
+            // Top Header: Title & Badges
+            GUI.Label(new Rect(16, 10, 110, 24), "PATCHZONE", styleTitle);
+            GUI.Label(new Rect(124, 11, 80, 24), "MODERN", styleSubtitle);
+
+            // Version Pill
+            Color prevCol = GUI.color;
+            GUI.color = new Color(0.5f, 0.55f, 0.65f, 0.8f);
+            GUI.Label(new Rect(205, 13, 140, 20), "[ v2.0 • MONO ]");
+            GUI.color = prevCol;
+
+            // Language Selector in Header
+            if (GUI.Button(new Rect(winRect.width - 100, 10, 56, 24), langIndex == 0 ? "PT-BR" : "EN-US", styleActionBtn))
+            {
+                langIndex = (langIndex == 0) ? 1 : 0;
+            }
+
+            // Close Button
+            if (GUI.Button(new Rect(winRect.width - 36, 10, 26, 24), "✕", styleCloseBtn))
             {
                 ToggleMenu(false);
             }
 
-            float contentX = sideWidth + 20f;
-            float contentY = 24f;
-            float contentW = winRect.width - sideWidth - 40f;
-            float contentH = winRect.height - 48f;
+            // Left Sidebar: Modern Tabs
+            string[] tabs = Tabs[langIndex];
+            string[] tabIcons = TabIcons;
+            float tabY = headerHeight + 16f;
 
-            GUI.DrawTexture(new Rect(contentX - 8, contentY + 36, contentW + 16, contentH - 40), texCard);
+            for (int i = 0; i < tabs.Length; i++)
+            {
+                Rect rTab = new Rect(8, tabY, sideWidth - 16, 36);
+                bool isActive = (currentTab == i);
 
-            Rect contentArea = new Rect(contentX, contentY, contentW, contentH);
-            GUILayout.BeginArea(contentArea);
+                if (isActive)
+                {
+                    GUI.DrawTexture(new Rect(8, tabY + 4, 3, 28), texAccentCyan);
+                }
 
+                string label = (i < tabIcons.Length ? tabIcons[i] : "") + tabs[i];
+                if (GUI.Button(rTab, label, isActive ? styleTabActive : styleTabInactive))
+                {
+                    currentTab = i;
+                    contentScroll = Vector2.zero;
+                }
+                tabY += 40;
+            }
+
+            // Sidebar Footer: Dev credits
+            float footerY = winRect.height - 46f;
+            GUI.color = new Color(0.40f, 0.50f, 0.65f, 0.9f);
+            GUI.Label(new Rect(14, footerY, sideWidth - 20, 18), "PatchZone • Kayke");
+            GUI.Label(new Rect(14, footerY + 16, sideWidth - 20, 18), "@PatchZoneBR");
             GUI.color = Color.white;
+
+            // Content Area Container
+            float contentX = sideWidth + 14f;
+            float contentY = headerHeight + 14f;
+            float contentW = winRect.width - sideWidth - 28f;
+            float contentH = winRect.height - headerHeight - 28f;
+
+            // Draw Card Background
+            GUI.DrawTexture(new Rect(contentX, contentY, contentW, contentH), texCard);
+            GUI.DrawTexture(new Rect(contentX, contentY, contentW, 1), texCardBorder);
+            GUI.DrawTexture(new Rect(contentX, contentY + contentH - 1, contentW, 1), texCardBorder);
+            GUI.DrawTexture(new Rect(contentX, contentY, 1, contentH), texCardBorder);
+            GUI.DrawTexture(new Rect(contentX + contentW - 1, contentY, 1, contentH), texCardBorder);
+
+            // Content Area Layout
+            Rect areaRect = new Rect(contentX + 14, contentY + 14, contentW - 28, contentH - 28);
+            GUILayout.BeginArea(areaRect);
+            contentScroll = GUILayout.BeginScrollView(contentScroll, GUILayout.Width(contentW - 28), GUILayout.Height(contentH - 28));
 
             switch (currentTab)
             {
                 case 0:
-                    GUILayout.Label(T("JOGADOR", "PLAYER"));
-                    GUILayout.Space(14);
+                    GUILayout.Label(T("CONFIGURAÇÕES DO JOGADOR", "PLAYER MODIFICATIONS"), styleHeader);
+                    GUILayout.Space(12);
 
-                    infiniteMoney = GUILayout.Toggle(infiniteMoney, T(" Dinheiro Máximo ($999K Constante)", " Max Money ($999K Lock)"));
-                    GUILayout.Space(6);
+                    infiniteMoney = DrawModernToggle(T("Dinheiro Máximo ($999K Lock)", "Max Money ($999K Lock)"), infiniteMoney);
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button(T("+$50.000", "+$50K"), GUILayout.Height(26))) SetPlayerMoney(50000);
-                    if (GUILayout.Button(T("+$250.000", "+$250K"), GUILayout.Height(26))) SetPlayerMoney(250000);
-                    if (GUILayout.Button(T("+$1.000.000", "+$1M"), GUILayout.Height(26))) SetPlayerMoney(1000000);
+                    if (GUILayout.Button(T("+$50.000", "+$50K"), styleActionBtn, GUILayout.Height(28))) SetPlayerMoney(50000);
+                    if (GUILayout.Button(T("+$250.000", "+$250K"), styleActionBtn, GUILayout.Height(28))) SetPlayerMoney(250000);
+                    if (GUILayout.Button(T("+$1.000.000", "+$1M"), styleActionBtn, GUILayout.Height(28))) SetPlayerMoney(1000000);
                     GUILayout.EndHorizontal();
                     GUILayout.Space(10);
 
-                    untouchable = GUILayout.Toggle(untouchable, T(" Ignorar Inimigos (IA Passiva)", " Ignore Enemies (Passive AI)"));
-                    GUILayout.Space(6);
+                    untouchable = DrawModernToggle(T("Ignorar Inimigos (IA Passiva)", "Ignore Enemies (Passive AI)"), untouchable);
+                    noDamage = DrawModernToggle(T("Modo Invencível (God Mode)", "Invulnerability (God Mode)"), noDamage);
+                    unlimitedEnergy = DrawModernToggle(T("Estamina / Sprint Infinito", "Infinite Stamina / Sprint"), unlimitedEnergy);
+                    invisibility = DrawModernToggle(T("Invisibilidade Total", "Full Invisibility"), invisibility);
+                    brightMap = DrawModernToggle(T("Iluminação Total do Mapa (Fullbright)", "Fullbright / Clear Vision"), brightMap);
 
-                    noDamage = GUILayout.Toggle(noDamage, T(" Modo Invencível (God Mode)", " Invulnerability (God Mode)"));
-                    GUILayout.Space(6);
-
-                    unlimitedEnergy = GUILayout.Toggle(unlimitedEnergy, T(" Estamina / Sprint Infinito", " Infinite Stamina / Sprint"));
-                    GUILayout.Space(6);
-
-                    invisibility = GUILayout.Toggle(invisibility, T(" Invisibilidade Total", " Full Invisibility"));
-                    GUILayout.Space(6);
-
-                    superGrab = GUILayout.Toggle(superGrab, T(" Pegada Forte & Estabilizada", " Heavy Grab & Stable Physics"));
-                    GUILayout.Space(4);
-
+                    superGrab = DrawModernToggle(T("Pegada Forte & Estabilizada (Super Grab)", "Heavy Grab & Stable Physics"), superGrab);
                     if (superGrab)
                     {
-                        GUILayout.BeginHorizontal();
-                        GUILayout.Label(T("Potência: ", "Power: ") + grabForceMultiplier.ToString("0.0") + "x", GUILayout.Width(170));
-                        if (GUILayout.Button("-", GUILayout.Width(28), GUILayout.Height(22))) grabForceMultiplier = Mathf.Max(0.5f, grabForceMultiplier - 0.5f);
-                        if (GUILayout.Button("+", GUILayout.Width(28), GUILayout.Height(22))) grabForceMultiplier = Mathf.Min(5.0f, grabForceMultiplier + 0.5f);
-                        GUILayout.EndHorizontal();
+                        grabForceMultiplier = DrawModernStepper(T("Potência da Pegada", "Grab Force Multiplier"), grabForceMultiplier, 0.5f, 0.5f, 5.0f, "0.0x");
                     }
-                    GUILayout.Space(6);
-
-                    brightMap = GUILayout.Toggle(brightMap, T(" Iluminação Total do Mapa (Fullbright)", " Fullbright / Clear Map Vision"));
-                    GUILayout.Space(10);
+                    GUILayout.Space(8);
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button(T("✚ Restaurar Vida (100%)", "✚ Full Heal (100%)"), GUILayout.Height(28)))
+                    if (GUILayout.Button(T("✚ Restaurar Vida (100%)", "✚ Full Heal (100%)"), styleActionBtn, GUILayout.Height(30)))
                     {
                         HealLocalPlayer();
                     }
-                    if (GUILayout.Button(T("⛟ Retornar ao Caminhão", "⛟ Return to Truck"), GUILayout.Height(28)))
+                    if (GUILayout.Button(T("⛟ Retornar ao Caminhão", "⛟ Return to Truck"), styleActionBtn, GUILayout.Height(30)))
                     {
                         TeleportToSafety();
                     }
@@ -2319,250 +2540,194 @@ namespace CustomIngameMenu
                     break;
 
                 case 1:
-                    GUILayout.Label(T("FÍSICA & MOVIMENTAÇÃO", "PHYSICS & MOVEMENT"));
-                    GUILayout.Space(16);
-
-                    infiniteJumps = GUILayout.Toggle(infiniteJumps, T(" Pulo Infinito", " Infinite Jump"));
+                    GUILayout.Label(T("FÍSICA & MOVIMENTAÇÃO", "PHYSICS & MOVEMENT"), styleHeader);
                     GUILayout.Space(12);
 
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label(T("Velocidade Andando", "Walk Speed Multiplier"), GUILayout.Width(200));
-                    if (GUILayout.Button("-", GUILayout.Width(28), GUILayout.Height(24))) walkSpeedMultiplier = Mathf.Max(0.5f, walkSpeedMultiplier - 0.5f);
-                    GUILayout.Label(" " + walkSpeedMultiplier.ToString("0.#") + "x", GUILayout.Width(45));
-                    if (GUILayout.Button("+", GUILayout.Width(28), GUILayout.Height(24))) walkSpeedMultiplier = Mathf.Min(10.0f, walkSpeedMultiplier + 0.5f);
-                    GUILayout.EndHorizontal();
-
+                    infiniteJumps = DrawModernToggle(T("Pulo Infinito (Air Jump)", "Infinite Air Jump"), infiniteJumps);
                     GUILayout.Space(8);
 
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label(T("Velocidade Correndo", "Sprint Speed Multiplier"), GUILayout.Width(200));
-                    if (GUILayout.Button("-", GUILayout.Width(28), GUILayout.Height(24))) sprintSpeedMultiplier = Mathf.Max(0.5f, sprintSpeedMultiplier - 0.5f);
-                    GUILayout.Label(" " + sprintSpeedMultiplier.ToString("0.#") + "x", GUILayout.Width(45));
-                    if (GUILayout.Button("+", GUILayout.Width(28), GUILayout.Height(24))) sprintSpeedMultiplier = Mathf.Min(10.0f, sprintSpeedMultiplier + 0.5f);
-                    GUILayout.EndHorizontal();
+                    walkSpeedMultiplier = DrawModernStepper(T("Velocidade Andando", "Walk Speed Multiplier"), walkSpeedMultiplier, 0.5f, 0.5f, 10.0f, "0.0x");
+                    sprintSpeedMultiplier = DrawModernStepper(T("Velocidade Correndo", "Sprint Speed Multiplier"), sprintSpeedMultiplier, 0.5f, 0.5f, 10.0f, "0.0x");
+                    crouchSpeedMultiplier = DrawModernStepper(T("Velocidade Agachado", "Crouch Speed Multiplier"), crouchSpeedMultiplier, 0.5f, 0.5f, 10.0f, "0.0x");
 
-                    GUILayout.Space(8);
-
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label(T("Velocidade Agachado", "Crouch Speed Multiplier"), GUILayout.Width(200));
-                    if (GUILayout.Button("-", GUILayout.Width(28), GUILayout.Height(24))) crouchSpeedMultiplier = Mathf.Max(0.5f, crouchSpeedMultiplier - 0.5f);
-                    GUILayout.Label(" " + crouchSpeedMultiplier.ToString("0.#") + "x", GUILayout.Width(45));
-                    if (GUILayout.Button("+", GUILayout.Width(28), GUILayout.Height(24))) crouchSpeedMultiplier = Mathf.Min(10.0f, crouchSpeedMultiplier + 0.5f);
-                    GUILayout.EndHorizontal();
+                    GUILayout.Space(12);
+                    if (GUILayout.Button(T("Restaurar Velocidades Padrão (1.0x)", "Reset Speeds to Default (1.0x)"), styleActionBtn, GUILayout.Height(30)))
+                    {
+                        walkSpeedMultiplier = 1.0f;
+                        sprintSpeedMultiplier = 1.0f;
+                        crouchSpeedMultiplier = 1.0f;
+                    }
                     break;
 
                 case 2:
-                    GUILayout.Label(T("VISUALIZAÇÃO TÁTICA (ESP)", "TACTICAL VISUALS (ESP)"));
+                    GUILayout.Label(T("VISUALIZAÇÃO TÁTICA (ESP)", "TACTICAL VISUALS (ESP)"), styleHeader);
                     GUILayout.Space(10);
 
-                    espScroll = GUILayout.BeginScrollView(espScroll, GUILayout.Height(380));
-
-                    GUILayout.Label(T("• ITENS & RELÍQUIAS:", "• LOOT & VALUABLES:"));
+                    GUILayout.Label(T("• ITENS & RELÍQUIAS (VALUABLES):", "• LOOT & VALUABLES:"), styleLabelText);
                     GUILayout.Space(4);
-                    espValuables = GUILayout.Toggle(espValuables, T(" ESP de Itens", " Valuables ESP"));
+                    espValuables = DrawModernToggle(T("ESP de Itens", "Valuables ESP"), espValuables);
                     if (espValuables)
                     {
-                        espBoxValuables = GUILayout.Toggle(espBoxValuables, T("  └ Caixa Delimitadora", "  └ Bounding Box"));
-                        espShowPrice = GUILayout.Toggle(espShowPrice, T("  └ Exibir Valor ($)", "  └ Show Cash Value"));
-                        espGoldBadgeHighValue = GUILayout.Toggle(espGoldBadgeHighValue, T("  └ Destaque Dourado (> $3K)", "  └ Gold Highlight (> $3K)"));
-                        espOnlyGoldItems = GUILayout.Toggle(espOnlyGoldItems, T("  └ Apenas Itens Dourados (Filtrar Resto)", "  └ Gold Items Only"));
-
-                        GUILayout.BeginHorizontal();
-                        GUILayout.Label(T("  └ Corte de Preço Mínimo: ", "  └ Minimum Cutoff Price: ") + (espValuablesMinPrice <= 0 ? T("Todos", "All") : "$" + espValuablesMinPrice.ToString("0")));
-                        if (GUILayout.Button("-", GUILayout.Width(26))) espValuablesMinPrice = Mathf.Max(0f, espValuablesMinPrice - 500f);
-                        if (GUILayout.Button("+", GUILayout.Width(26))) espValuablesMinPrice = Mathf.Min(5000f, espValuablesMinPrice + 500f);
-                        GUILayout.EndHorizontal();
+                        espBoxValuables = DrawModernToggle(T("  └ Caixa Delimitadora (Box)", "  └ Bounding Box"), espBoxValuables);
+                        espShowPrice = DrawModernToggle(T("  └ Exibir Valor em Dólar ($)", "  └ Show Cash Value"), espShowPrice);
+                        espGoldBadgeHighValue = DrawModernToggle(T("  └ Destaque Dourado (> $3K)", "  └ Gold Highlight (> $3K)"), espGoldBadgeHighValue);
+                        espOnlyGoldItems = DrawModernToggle(T("  └ Filtrar Apenas Itens Dourados", "  └ Gold Items Only"), espOnlyGoldItems);
+                        espValuablesMinPrice = DrawModernStepper(T("  └ Preço Mínimo", "  └ Min Price Cutoff"), espValuablesMinPrice, 500f, 0f, 5000f, "$0");
                     }
 
-                    GUILayout.Space(10);
-                    GUILayout.Label(T("• ENTIDADES & MONSTROS:", "• ENTITIES & MONSTERS:"));
+                    GUILayout.Space(12);
+                    GUILayout.Label(T("• ENTIDADES & MONSTROS:", "• ENTITIES & MONSTERS:"), styleLabelText);
                     GUILayout.Space(4);
-                    espEnemies = GUILayout.Toggle(espEnemies, T(" ESP de Monstros", " Monster ESP"));
+                    espEnemies = DrawModernToggle(T("ESP de Monstros", "Monster ESP"), espEnemies);
                     if (espEnemies)
                     {
-                        espBoxEnemies = GUILayout.Toggle(espBoxEnemies, T("  └ Caixa Delimitadora", "  └ Bounding Box"));
-                        espShowEnemyName = GUILayout.Toggle(espShowEnemyName, T("  └ Identificação / Nome", "  └ Entity Name"));
-                        espShowHealthBar = GUILayout.Toggle(espShowHealthBar, T("  └ Barra de Vida Dinâmica", "  └ Dynamic Health Bar"));
+                        espBoxEnemies = DrawModernToggle(T("  └ Caixa Delimitadora (Box)", "  └ Bounding Box"), espBoxEnemies);
+                        espShowEnemyName = DrawModernToggle(T("  └ Identificação / Nome", "  └ Entity Name"), espShowEnemyName);
+                        espShowHealthBar = DrawModernToggle(T("  └ Barra de Vida Dinâmica", "  └ Dynamic Health Bar"), espShowHealthBar);
                     }
 
-                    GUILayout.Space(10);
-                    GUILayout.Label(T("• PONTO DE EXTRAÇÃO:", "• EXTRACTION ZONE:"));
+                    GUILayout.Space(12);
+                    GUILayout.Label(T("• PONTO DE EXTRAÇÃO:", "• EXTRACTION ZONE:"), styleLabelText);
                     GUILayout.Space(4);
-                    espExtraction = GUILayout.Toggle(espExtraction, T(" ESP de Extração (Oculto no Lobby)", " Extraction ESP"));
+                    espExtraction = DrawModernToggle(T("ESP de Extração", "Extraction ESP"), espExtraction);
                     if (espExtraction)
                     {
-                        espExtractionOnlyLocked = GUILayout.Toggle(espExtractionOnlyLocked, T("  └ Apenas Fechados / Bloqueados", "  └ Locked Only"));
-                        espExtractionOnlyIncomplete = GUILayout.Toggle(espExtractionOnlyIncomplete, T("  └ Ocultar após Concluir Meta", "  └ Hide Once Goal Reached"));
+                        espExtractionOnlyLocked = DrawModernToggle(T("  └ Apenas Bloqueados / Fechados", "  └ Locked Only"), espExtractionOnlyLocked);
+                        espExtractionOnlyIncomplete = DrawModernToggle(T("  └ Ocultar após Meta Atingida", "  └ Hide Once Goal Reached"), espExtractionOnlyIncomplete);
                     }
 
-                    GUILayout.Space(10);
-                    GUILayout.Label(T("• CONFIGURAÇÃO GERAL:", "• GENERAL CONFIG:"));
+                    GUILayout.Space(12);
+                    GUILayout.Label(T("• CONFIGURAÇÃO GERAL:", "• GENERAL CONFIG:"), styleLabelText);
                     GUILayout.Space(4);
-                    espShowDistance = GUILayout.Toggle(espShowDistance, T(" Exibir Distância em Metros [m]", " Show Distance Indicator [m]"));
-
-                    GUILayout.BeginHorizontal();
-                    GUILayout.Label(T(" Alcance Máximo: ", " Max Range: ") + espMaxDistance.ToString("0") + "m");
-                    if (GUILayout.Button("-", GUILayout.Width(28))) espMaxDistance = Mathf.Max(25f, espMaxDistance - 25f);
-                    if (GUILayout.Button("+", GUILayout.Width(28))) espMaxDistance = Mathf.Min(300f, espMaxDistance + 25f);
-                    GUILayout.EndHorizontal();
-
-                    GUILayout.EndScrollView();
+                    espShowDistance = DrawModernToggle(T("Exibir Distância em Metros [m]", "Show Distance Indicator [m]"), espShowDistance);
+                    espMaxDistance = DrawModernStepper(T("Alcance Máximo", "Max Distance Range"), espMaxDistance, 25f, 25f, 300f, "0m");
                     break;
 
                 case 3:
-                    GUILayout.Label(T("GERADOR DE EQUIPAMENTOS", "EQUIPMENT SPAWNER"));
+                    GUILayout.Label(T("GERADOR DE EQUIPAMENTOS & ORBES", "EQUIPMENT & SCRAP SPAWNER"), styleHeader);
                     GUILayout.Space(10);
 
-                    GUILayout.Label(T("• ORBES COLETÁVEIS (VALOR EXTRA):", "• DROP ORBS (EXTRA SCRAP):"));
+                    GUILayout.Label(T("• Orbes de Sucata (Valor Extra):", "• Scrap Orbs (Cash Value):"), styleLabelText);
+                    GUILayout.Space(4);
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button(T("🟣 Orbe Pequena", "🟣 Small Orb"), styleActionBtn, GUILayout.Height(28))) SpawnEnemyValuable(0);
+                    if (GUILayout.Button(T("🟣 Orbe Média", "🟣 Medium Orb"), styleActionBtn, GUILayout.Height(28))) SpawnEnemyValuable(1);
+                    if (GUILayout.Button(T("🟣 Orbe Grande", "🟣 Big Orb"), styleActionBtn, GUILayout.Height(28))) SpawnEnemyValuable(2);
+                    GUILayout.EndHorizontal();
+
+                    GUILayout.Space(12);
+                    GUILayout.Label(T("• Armas & Equipamentos de Suporte:", "• Weapons & Support Equipment:"), styleLabelText);
                     GUILayout.Space(4);
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button(T("🟣 Orbe Pequena", "🟣 Small Orb"), GUILayout.Height(28))) SpawnEnemyValuable(0);
-                    if (GUILayout.Button(T("🟣 Orbe Média", "🟣 Medium Orb"), GUILayout.Height(28))) SpawnEnemyValuable(1);
-                    if (GUILayout.Button(T("🟣 Orbe Grande", "🟣 Big Orb"), GUILayout.Height(28))) SpawnEnemyValuable(2);
-                    GUILayout.EndHorizontal();
-
-                    GUILayout.Space(10);
-                    GUILayout.Label(T("• ARMAS & ITENS DE SUPORTE:", "• COMBAT & SUPPORT ARSENAL:"));
-                    GUILayout.Space(4);
-
-                    itemSpawnScroll = GUILayout.BeginScrollView(itemSpawnScroll, GUILayout.Height(230));
-
-                    GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("🔫 " + T("Rifle Laser", "Laser Rifle"), GUILayout.Height(28))) SpawnGameItem("Item Gun Laser");
-                    if (GUILayout.Button("🔫 " + T("Pistola Balística", "Ballistic Pistol"), GUILayout.Height(28))) SpawnGameItem("Item Gun Bullet");
+                    if (GUILayout.Button("🔫 " + T("Rifle Laser", "Laser Rifle"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Gun Laser");
+                    if (GUILayout.Button("🔫 " + T("Pistola Balística", "Ballistic Pistol"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Gun Bullet");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("💉 " + T("Tranquilizante", "Tranq Pistol"), GUILayout.Height(28))) SpawnGameItem("Item Gun Tranq");
-                    if (GUILayout.Button("⚡ " + T("Bastão de Choque", "Stun Baton"), GUILayout.Height(28))) SpawnGameItem("Item Stun Baton");
+                    if (GUILayout.Button("💉 " + T("Tranquilizante", "Tranq Pistol"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Gun Tranq");
+                    if (GUILayout.Button("⚡ " + T("Bastão de Choque", "Stun Baton"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Stun Baton");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("🔨 " + T("Martelo de Impacto", "Impact Hammer"), GUILayout.Height(28))) SpawnGameItem("Item Melee Inflatable Hammer");
-                    if (GUILayout.Button("💣 " + T("Granada de Fragmentação", "Frag Grenade"), GUILayout.Height(28))) SpawnGameItem("Item Grenade Explosive");
+                    if (GUILayout.Button("🔨 " + T("Martelo de Impacto", "Impact Hammer"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Melee Inflatable Hammer");
+                    if (GUILayout.Button("💣 " + T("Granada Fragmentação", "Frag Grenade"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Grenade Explosive");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("💥 " + T("Granada Repulsora", "Shockwave Grenade"), GUILayout.Height(28))) SpawnGameItem("Item Grenade Shockwave");
-                    if (GUILayout.Button("⚡ " + T("Granada de Atordoamento", "Stun Grenade"), GUILayout.Height(28))) SpawnGameItem("Item Grenade Stun");
+                    if (GUILayout.Button("💥 " + T("Granada Repulsora", "Shockwave Grenade"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Grenade Shockwave");
+                    if (GUILayout.Button("⚡ " + T("Granada Choque", "Stun Grenade"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Grenade Stun");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("💣 " + T("Mina Explosiva", "Explosive Mine"), GUILayout.Height(28))) SpawnGameItem("Item Mine Explosive");
-                    if (GUILayout.Button("⚡ " + T("Mina de Choque", "Shock Mine"), GUILayout.Height(28))) SpawnGameItem("Item Mine Stun");
+                    if (GUILayout.Button("💣 " + T("Mina Explosiva", "Explosive Mine"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Mine Explosive");
+                    if (GUILayout.Button("⚡ " + T("Mina de Choque", "Shock Mine"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Mine Stun");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("🚀 " + T("Canhão de Carrinho", "Cart Cannon"), GUILayout.Height(28))) SpawnGameItem("Item Cart Cannon");
-                    if (GUILayout.Button("🔮 " + T("Laser de Carrinho", "Cart Laser"), GUILayout.Height(28))) SpawnGameItem("Item Cart Laser");
+                    if (GUILayout.Button("🚀 " + T("Canhão de Carrinho", "Cart Cannon"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Cart Cannon");
+                    if (GUILayout.Button("🔮 " + T("Laser de Carrinho", "Cart Laser"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Cart Laser");
                     GUILayout.EndHorizontal();
 
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("🌀 " + T("Cajado de Vácuo", "Void Staff"), GUILayout.Height(28))) SpawnGameItem("Item Staff Void");
-                    if (GUILayout.Button("💫 " + T("Cajado Gravitacional", "Anti-Gravity Staff"), GUILayout.Height(28))) SpawnGameItem("Item Staff Zero Gravity");
+                    if (GUILayout.Button("🌀 " + T("Cajado de Vácuo", "Void Staff"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Staff Void");
+                    if (GUILayout.Button("💫 " + T("Cajado Gravitacional", "Anti-Gravity Staff"), styleActionBtn, GUILayout.Height(28))) SpawnGameItem("Item Staff Zero Gravity");
                     GUILayout.EndHorizontal();
-
-                    GUILayout.EndScrollView();
                     break;
 
                 case 4:
-                    GUILayout.Label(T("COSMÉTICOS & SKINS", "COSMETICS & SKINS"));
-                    GUILayout.Space(20);
+                    GUILayout.Label(T("COSMÉTICOS & SKINS", "COSMETICS & SKINS"), styleHeader);
+                    GUILayout.Space(14);
 
-                    if (GUILayout.Button(T("Liberar Todo o Guarda-Roupa (Permanente)", "Unlock Full Wardrobe (Permanent)"), GUILayout.Height(36)))
+                    if (GUILayout.Button(T("★ Liberar Todo o Guarda-Roupa (Permanente)", "★ Unlock Full Wardrobe (Permanent)"), styleActionBtn, GUILayout.Height(36)))
                     {
                         ForceUnlockCosmetics();
                     }
 
-                    GUILayout.Space(14);
-                    GUI.color = new Color(0.7f, 0.75f, 0.82f);
-                    GUILayout.Label(T("Salva no seu perfil do jogo todos os chapéus, trajes, cores e partes cosméticas sem alterar seu progresso.", "Saves all hats, suits, colors and cosmetic items directly to your game profile without altering progression."));
+                    GUILayout.Space(12);
+                    GUI.color = new Color(0.65f, 0.70f, 0.80f);
+                    GUILayout.Label(T("Desbloqueia e salva permanentemente no seu perfil todos os chapéus, trajes, cores e partes cosméticas sem alterar seu progresso salvo.", "Permanently unlocks and saves all hats, suits, colors and cosmetic items directly to your profile without affecting normal progression."));
                     GUI.color = Color.white;
                     break;
 
                 case 5:
-                    GUILayout.Label(T("SESSÃO & LOJA", "LOBBY & SHOP"));
-                    GUILayout.Space(14);
+                    GUILayout.Label(T("SESSÃO & LOJA", "LOBBY & SHOP AUTOMATION"), styleHeader);
+                    GUILayout.Space(12);
 
-                    unlockShopItems = GUILayout.Toggle(unlockShopItems, T(" Liberar Todos os Itens da Loja", " Unlock Full Shop Catalog"));
-                    GUILayout.Space(6);
-
-                    freeShop = GUILayout.Toggle(freeShop, T(" Loja 100% Gratuita (Custo $0)", " Free Store Purchases ($0 Cost)"));
-                    GUILayout.Space(6);
-
-                    freeExtraction = GUILayout.Toggle(freeExtraction, T(" Extração Imediata (Meta Concluída)", " Instant Extraction (Zero Goal)"));
-                    GUILayout.Space(10);
-
-                    unbreakableItems = GUILayout.Toggle(unbreakableItems, T(" Itens Inquebráveis (Anti-Impacto)", " Unbreakable Items (Fall Damage Off)"));
-                    GUILayout.Space(6);
-
-                    infiniteStationCharge = GUILayout.Toggle(infiniteStationCharge, T(" Gerador de Energia Infinito (100%)", " Perpetual Power Station (100%)"));
-                    GUILayout.Space(6);
-
-                    infiniteItemBattery = GUILayout.Toggle(infiniteItemBattery, T(" Bateria Eterna em Todos os Equipamentos", " Infinite Battery On All Gear"));
-                    GUILayout.Space(6);
-
-                    autoChargeHeldItem = GUILayout.Toggle(autoChargeHeldItem, T(" Recarga Automática no Inventário", " Auto-Recharge Held Equipment"));
+                    unlockShopItems = DrawModernToggle(T("Liberar Todos os Itens da Loja", "Unlock Full Shop Catalog"), unlockShopItems);
+                    freeShop = DrawModernToggle(T("Loja 100% Gratuita (Custo $0)", "Free Store Purchases ($0 Cost)"), freeShop);
+                    freeExtraction = DrawModernToggle(T("Extração Imediata (Meta Concluída)", "Instant Extraction (Zero Goal)"), freeExtraction);
+                    unbreakableItems = DrawModernToggle(T("Itens Inquebráveis (Anti-Impacto)", "Unbreakable Items (Fall Damage Off)"), unbreakableItems);
+                    infiniteStationCharge = DrawModernToggle(T("Gerador de Energia Infinito (100%)", "Perpetual Power Station (100%)"), infiniteStationCharge);
+                    infiniteItemBattery = DrawModernToggle(T("Bateria Eterna em Equipamentos", "Infinite Battery On All Gear"), infiniteItemBattery);
+                    autoChargeHeldItem = DrawModernToggle(T("Recarga Automática no Inventário", "Auto-Recharge Held Equipment"), autoChargeHeldItem);
                     break;
 
                 case 6:
-                    GUILayout.Label(T("SISTEMA", "SYSTEM"));
-                    GUILayout.Space(20);
+                    GUILayout.Label(T("SISTEMA & CONFIGURAÇÕES", "SYSTEM CONFIGURATION"), styleHeader);
+                    GUILayout.Space(14);
 
-                    GUILayout.Label(T("Idioma / Language", "Interface Language"));
-                    GUILayout.Space(6);
-
+                    GUILayout.Label(T("Idioma / Language", "Interface Language"), styleLabelText);
+                    GUILayout.Space(4);
                     GUILayout.BeginHorizontal();
-                    if (GUILayout.Button(langIndex == 0 ? "[ Português ]" : "Português", GUILayout.Height(30)))
-                    {
-                        langIndex = 0;
-                    }
-                    if (GUILayout.Button(langIndex == 1 ? "[ English ]" : "English", GUILayout.Height(30)))
-                    {
-                        langIndex = 1;
-                    }
+                    if (GUILayout.Button(langIndex == 0 ? "[ Português ]" : "Português", styleActionBtn, GUILayout.Height(28))) langIndex = 0;
+                    if (GUILayout.Button(langIndex == 1 ? "[ English ]" : "English", styleActionBtn, GUILayout.Height(28))) langIndex = 1;
                     GUILayout.EndHorizontal();
 
-                    GUILayout.Space(15);
-                    if (GUILayout.Button(T("Reposicionar Janela ao Centro", "Reset Window to Center"), GUILayout.Height(30)))
+                    GUILayout.Space(14);
+                    if (GUILayout.Button(T("Centralizar Janela na Tela", "Reset Window to Center"), styleActionBtn, GUILayout.Height(30)))
                     {
                         winRect.x = (Screen.width - winRect.width) / 2f;
                         winRect.y = (Screen.height - winRect.height) / 2f;
                     }
 
                     GUILayout.Space(10);
-                    if (GUILayout.Button(T("Descarregar Cheat / Ejetar DLL", "Unload & Eject Menu"), GUILayout.Height(30)))
+                    if (GUILayout.Button(T("Descarregar Cheat / Ejetar DLL", "Unload & Eject Menu"), styleCloseBtn, GUILayout.Height(30)))
                     {
                         Loader.Unload();
                     }
 
-                    GUILayout.Space(14);
-                    GUI.color = new Color(0.2f, 0.4f, 0.8f, 0.5f);
-                    GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+                    GUILayout.Space(16);
+                    GUILayout.Label(T("CRÉDITOS & SUPORTE", "CREDITS & SUPPORT"), styleHeader);
+                    GUILayout.Space(4);
+                    GUILayout.Label("PatchZone Modern Framework v2.0", styleLabelText);
+                    GUILayout.Label("Desenvolvido por: Kayke", styleLabelText);
+                    GUILayout.Label("Discord Oficial: kayke_v1", styleLabelText);
                     GUILayout.Space(8);
 
-                    GUI.color = new Color(0.35f, 0.75f, 1f);
-                    GUILayout.Label("PATCHZONE • CRÉDITOS");
-                    GUILayout.Space(4);
-
-                    GUI.color = Color.white;
-                    GUILayout.Label("Desenvolvido por: Kayke");
-                    GUILayout.Label("Discord Oficial: kayke_v1");
-                    GUILayout.Space(10);
-
-                    GUI.color = new Color(1f, 0.35f, 0.35f);
-                    if (GUILayout.Button("▶ Acessar Canal do YouTube", GUILayout.Height(36)))
+                    if (GUILayout.Button("▶ Acessar Canal do YouTube", styleActionBtn, GUILayout.Height(32)))
                     {
                         Application.OpenURL("https://www.youtube.com/@PatchZoneBR");
                     }
-                    GUI.color = Color.white;
                     break;
             }
 
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
 
-            GUI.DragWindow(new Rect(0, 0, winRect.width, 40));
+            // Window Dragging by top header
+            GUI.DragWindow(new Rect(0, 0, winRect.width, headerHeight));
         }
+
     }
 }
