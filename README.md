@@ -1,76 +1,65 @@
-# PatchZone Internal • Unity Mono Ingame Overlay & Modding Framework
+# PatchZone Internal • Unity Mono Ingame Mod & Framework v2.0
 
-A lightweight in-game GUI overlay framework written in C# utilizing Unity IMGUI, designed for software reverse engineering research, runtime memory inspection, and dynamic reflection (.NET Reflection) on the Unity Engine.
-
----
-
-## 📌 Project Overview
-
-This repository demonstrates internal tooling development within Unity (Mono runtime) environments. The implementation injects an interactive dark-themed interface directly into the engine's render loop, using runtime reflection to discover, cache, and interact with component instances without modifying game binaries on disk.
-
-### 🛠️ Core Technologies & Concepts
-
-- **C# / .NET Framework 4.x / Mono Runtime**
-- **Unity IMGUI (`OnGUI`, `GUI.Window`, `GUILayout`)**: Custom draggable window containers (`GUI.DragWindow`), procedural textures, styled cards, and high-DPI scaling.
-- **Advanced Dynamic Reflection (`System.Reflection`)**: Runtime assembly inspection with cached `FieldInfo`, `PropertyInfo`, and `MethodInfo` handles to eliminate runtime lookup overhead.
-- **World-to-Screen Projection (W2S)**: 3D-to-2D matrix coordinate conversion with render-texture compensation and frustum culling.
-- **Input Pipeline Interception**: Hardware cursor state management (`Cursor.lockState`, `Cursor.visible`) and aim-controller overrides to ensure seamless UI navigation without interfering with camera look angles.
+Menu interno para R.E.P.O desenvolvido em C# rodando direto na Unity via IMGUI e reflexão dinâmica (.NET Reflection). Não precisa de overlay externo, DirectX hook externo nem executável secundário — roda 100% embutido na pipeline de render da engine.
 
 ---
 
-## ⚡ Architecture & Modules
+## 🚀 Novidades da v2.0
 
-The codebase is engineered around a clean, self-contained lifecycle:
-
-### 1. Runtime Host & Lifecycle (`Loader`)
-- Static lifecycle handlers (`Init`, `Load`, `Unload`).
-- Instantiates a persistent host `GameObject` preserved across scene transitions via `Object.DontDestroyOnLoad`.
-- Safe teardown routine (`Loader.Unload`) restoring original game states, restoring cursor locks, and unhooking listeners cleanly.
-
-### 2. GUI Engine & Presentation
-- Vertical tab navigation layout with an eye-friendly dark aesthetic.
-- Modern charcoal/slate palette accented with deep electric blue.
-- Dynamic runtime language switching (English / Portuguese).
-- Layer sorting control (`GUI.depth`) preventing ESP overlay elements from clipping through modal dialogs.
-
-### 3. Spatial Awareness & Visuals (ESP / W2S)
-- Adaptive 2D bounding boxes scaled by camera distance and target dimensions.
-- Target health indicators with proportional color interpolation.
-- Frustum culling using camera forward dot product (`Vector3.Dot`) to drop behind-the-lens objects before drawing calls.
-- Euclidean distance calculation with configurable maximum range cutoffs.
-
-### 4. Memory & Reflection Engine
-- Safe type resolution across loaded domain assemblies without compile-time class dependencies.
-- Controlled interaction with kinematic fields (`Rigidbody.velocity`), player health structures, and local avatar movement multipliers.
+- **Painel Moderno Integrado**: Interface escura redesenhada (estilo Obsidian & Neon Cyan) direto no `OnGUI`, com abas laterais, toggles modernos, steppers numéricos e suporte a arrastar com o mouse.
+- **Visuals (ESP) Totalmente Restaurado**:
+  - **Loot & Relíquias**: Caixas delimitadoras com destaque em dourado pra itens valiosos (>$3.000), filtro de preço mínimo, distância e valor em dólar na tela.
+  - **Monstros & Inimigos**: ESP com nome da entidade, distância e barra de vida dinâmica com interpolação de cor (verde -> vermelho).
+  - **Extração**: Ponto de entrega com status da porta (trancado/aberto), cota da rodada restante e indicador de distância.
+- **Blindagem de FPS (Fix do drop de 400 -> 30 FPS)**:
+  - Cache estático de assemblies e ponteiros de reflexão (elimina varreduras repetidas de `GetAssemblies` e `GetType`).
+  - Pipeline de renderização **Zero-Allocation**: eliminadas as alocações de memória na heap durante o desenho do ESP, evitando que o Garbage Collector trave o jogo.
+  - Frustum culling antecipado: descarta objetos atrás da câmera antes de rodar qualquer cálculo ou `GetComponent`.
+  - Desacoplamento de rotinas pesadas em tickers de 10 Hz e 0.67 Hz (física e kinematics rodam a 400 FPS sem gargalo).
+  - Proteção Singleton no `Loader`: destrói clones se a DLL for injetada mais de uma vez sem fechar o jogo.
 
 ---
 
-## 🚀 Building from Source
+## 🛠️ Recursos Principais
 
-Compile the project directly via CLI using the native Microsoft C# Compiler or Roslyn:
+- **Jogador**: God Mode, estamina infinita, pulo contínuo (Air Jump), velocidade customizável (andar/correr/agachar), super pegada (Super Grab), invisibilidade e iluminação total do mapa (Fullbright).
+- **Sessão & Economia**: Trava de dinheiro em $999K, loja 100% gratuita, liberação de itens bloqueados por nível, extração imediata e baterias infinitas para equipamentos.
+- **Spawners**: Gerador de orbes de sucata (pequena, média, grande) e equipamentos táticos/armas direto no inventário.
+- **Cosméticos**: Desbloqueio completo de todos os chapéus, trajes e skins salvos permanentemente no perfil.
+
+---
+
+## ⌨️ Atalhos
+
+| Tecla | Função |
+|---|---|
+| `Insert` / `F1` / `Delete` | Abrir / Fechar o menu |
+| `Espaço` | Pulo Infinito no ar (quando ativado) |
+
+---
+
+## 🔧 Como Compilar
+
+Você pode compilar direto pelo terminal usando o script `build.ps1` ou chamando o compilador C# (`csc.exe`):
 
 ```bash
 csc.exe /target:library /out:"CheatMenu.dll" \
-  /r:"UnityEngine.dll" \
-  /r:"UnityEngine.CoreModule.dll" \
-  /r:"UnityEngine.IMGUIModule.dll" \
-  /r:"UnityEngine.InputLegacyModule.dll" \
-  /r:"UnityEngine.PhysicsModule.dll" \
-  /r:"UnityEngine.TextRenderingModule.dll" \
+  /nostdlib /noconfig \
+  /r:"REPO_Data\Managed\mscorlib.dll" \
+  /r:"REPO_Data\Managed\netstandard.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.CoreModule.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.IMGUIModule.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.InputLegacyModule.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.PhysicsModule.dll" \
+  /r:"REPO_Data\Managed\UnityEngine.TextRenderingModule.dll" \
   menu.cs
 ```
 
 ---
 
-## 👤 Developer & Contact
+## 👤 Desenvolvedor & Contato
 
-- **Lead Developer:** Kayke
+- **Desenvolvedor:** Kayke
 - **YouTube:** [@PatchZoneBR](https://www.youtube.com/@PatchZoneBR)
 - **Discord:** `kayke_v1`
-
----
-
-## ⚖️ Disclaimer
-
-> **Educational & Security Research Purposes Only:**  
-> This project is published strictly for educational purposes, software engineering portfolio demonstration, and research into game engine architecture and .NET runtime mechanics. The author neither encourages nor condones deploying this code in multiplayer servers or public matchmaking environments.
